@@ -10,6 +10,7 @@ import CoreImage
 /// 3. 动态半径 —— 双手距离越远特效越大，单手时基于手部包围盒大小
 /// 4. 多关键点融合 —— 使用食指尖 + 中指尖 + 手腕的加权质心，比单点更稳定
 /// 5. 手势感知 —— 检测握拳/张开/捏合手势，可用于智能切换行为
+/// 6. 帧间匹配 —— 按距离最近原则匹配上一帧的手，实现稳定的逐手平滑
 final class HandTrackingManager {
 
     /// 追踪结果：检测到的手部信息
@@ -20,8 +21,6 @@ final class HandTrackingManager {
         var rawPosition: CGPoint
         /// 置信度 (0~1)
         var confidence: Float
-        /// 是否为左手
-        var isLeft: Bool
         /// 手势类型
         var gesture: HandGesture
         /// 手部包围盒大小（归一化）
@@ -40,7 +39,7 @@ final class HandTrackingManager {
     /// 当前检测到的手部结果（最多2只，已平滑）
     private(set) var hands: [HandResult] = []
 
-    /// 上一帧的手部结果（用于丢手保持）
+    /// 上一帧的手部结果（用于丢手保持和帧间匹配）
     private var lastHands: [HandResult] = []
 
     /// 丢手保持计数器
@@ -141,14 +140,10 @@ final class HandTrackingManager {
             let gesture = detectGesture(obs)
             let confidence = obs.confidence
 
-            // 平滑位置：与上一帧同侧手做 EMA
-            let smoothedPos = smoothPosition(rawPos, chirality: obs.chirality)
-
             results.append(HandResult(
-                position: smoothedPos,
+                position: rawPos,
                 rawPosition: rawPos,
                 confidence: confidence,
-                isLeft: obs.chirality == .left,
                 gesture: gesture,
                 handSize: handSize
             ))
@@ -158,41 +153,58 @@ final class HandTrackingManager {
         results.sort { $0.confidence > $1.confidence }
         let topResults = Array(results.prefix(2))
 
+        // 帧间匹配 + 位置平滑
+        let smoothedResults = smoothHands(topResults)
+
         // 重置丢手计数
         lostFrameCount = 0
-        lastHands = topResults
-        hands = topResults
+        lastHands = smoothedResults
+        hands = smoothedResults
     }
 
     // MARK: - 智能计算
 
-    /// 计算手部中心和大小：使用食指尖、中指尖、手腕三点加权质心
+    /// 计算手部中心和大小：使用多关键点加权质心
     private func computeHandCenterAndSize(_ obs: VNHumanHandPoseObservation) -> (CGPoint, Float) {
-        var points: [CGPoint] = []
+        let allPoints = obs.recognizedPoints(.all)
 
-        // 收集可用关键点
-        if let indexTip = obs.indexTips?.first { points.append(indexTip.location) }
-        if let middleTip = obs.middleTips?.first { points.append(middleTip.location) }
-        if let wrist = obs.landmarks[.wrist] { points.append(wrist.location) }
-        if let thumbTip = obs.thumbTips?.first { points.append(thumbTip.location) }
-        if let ringTip = obs.ringTips?.first { points.append(ringTip.location) }
-        if let littleTip = obs.littleTips?.first { points.append(littleTip.location) }
-
-        guard !points.isEmpty else {
+        guard !allPoints.isEmpty else {
             return (CGPoint(x: 0.5, y: 0.5), 0.1)
         }
 
-        // 加权质心：食指尖权重最高（用于精确定位特效）
+        // 关节名与对应权重（食指尖权重最高，用于精确定位特效）
+        let jointWeights: [(VNHumanHandPoseObservation.JointName, CGFloat)] = [
+            (.indexTip, 3.0),
+            (.middleTip, 2.0),
+            (.wrist, 1.5),
+            (.thumbTip, 1.0),
+            (.ringTip, 0.8),
+            (.littleTip, 0.8)
+        ]
+
+        var weightedPoints: [(CGPoint, CGFloat)] = []
+        var allLocations: [CGPoint] = []
+
+        for (jointName, weight) in jointWeights {
+            if let point = allPoints[jointName], point.confidence > 0 {
+                weightedPoints.append((point.location, weight))
+                allLocations.append(point.location)
+            }
+        }
+
+        guard !weightedPoints.isEmpty else {
+            return (CGPoint(x: 0.5, y: 0.5), 0.1)
+        }
+
+        // 加权质心
         var totalWeight: CGFloat = 0
         var weightedX: CGFloat = 0
         var weightedY: CGFloat = 0
 
-        let weights: [CGFloat] = [3.0, 2.0, 1.5, 1.0, 0.8, 0.8] // 食指、中指、手腕、拇指、无名指、小指
-        for (i, p) in points.enumerated() {
-            let w = i < weights.count ? weights[i] : 0.5
+        for (loc, w) in weightedPoints {
             totalWeight += w
-            weightedX += p.x * w
-            weightedY += p.y * w
+            weightedX += loc.x * w
+            weightedY += loc.y * w
         }
 
         let cx = weightedX / totalWeight
@@ -202,8 +214,8 @@ final class HandTrackingManager {
         let pos = CGPoint(x: cx, y: 1.0 - cy)
 
         // 计算手部包围盒大小
-        let xs = points.map { $0.x }
-        let ys = points.map { $0.y }
+        let xs = allLocations.map { $0.x }
+        let ys = allLocations.map { $0.y }
         let width = Float(xs.max()! - xs.min()!)
         let height = Float(ys.max()! - ys.min()!)
         let handSize = sqrt(width * width + height * height)
@@ -213,12 +225,19 @@ final class HandTrackingManager {
 
     /// 手势识别
     private func detectGesture(_ obs: VNHumanHandPoseObservation) -> HandGesture {
-        guard let wrist = obs.landmarks[.wrist],
-              let indexTip = obs.indexTips?.first,
-              let thumbTip = obs.thumbTips?.first,
-              let middleTip = obs.middleTips?.first else {
+        let allPoints = obs.recognizedPoints(.all)
+
+        guard let wrist = allPoints[.wrist], wrist.confidence > 0,
+              let indexTip = allPoints[.indexTip], indexTip.confidence > 0,
+              let middleTip = allPoints[.middleTip], middleTip.confidence > 0,
+              let thumbTip = allPoints[.thumbTip], thumbTip.confidence > 0 else {
             return .unknown
         }
+
+        let w = wrist.location
+        let idx = indexTip.location
+        let mid = middleTip.location
+        let thu = thumbTip.location
 
         // 计算各指尖到手腕的距离
         let dist = { (a: CGPoint, b: CGPoint) -> CGFloat in
@@ -226,11 +245,11 @@ final class HandTrackingManager {
             return sqrt(dx * dx + dy * dy)
         }
 
-        let indexDist = dist(indexTip, wrist.location)
-        let middleDist = dist(middleTip, wrist.location)
-        let thumbIndexDist = dist(thumbTip, indexTip)
+        let indexDist = dist(idx, w)
+        let middleDist = dist(mid, w)
+        let thumbIndexDist = dist(thu, idx)
 
-        // 参考距离：手腕到中指根（用于归一化）
+        // 参考距离：手腕到中指尖（用于归一化）
         let refDist = max(middleDist, 0.01)
 
         // 捏合：拇指与食指尖距离很近
@@ -252,20 +271,47 @@ final class HandTrackingManager {
         return .open
     }
 
-    /// 位置平滑：与上一帧同侧手做指数移动平均
-    private func smoothPosition(_ raw: CGPoint, chirality: VNHumanHandPoseObservation.Chirality) -> CGPoint {
-        // 查找上一帧同侧手
-        let prev = lastHands.first { $0.isLeft == (chirality == .left) }
-
-        guard let prev = prev else {
-            return raw // 首帧或新手出现，直接使用原始位置
+    /// 帧间匹配 + 位置平滑：按距离最近原则匹配上一帧的手，做 EMA 平滑
+    private func smoothHands(_ current: [HandResult]) -> [HandResult] {
+        guard !lastHands.isEmpty else {
+            return current // 首帧或丢手后恢复，直接使用原始位置
         }
 
-        let alpha = smoothingFactor
-        return CGPoint(
-            x: prev.position.x * (1 - alpha) + raw.x * alpha,
-            y: prev.position.y * (1 - alpha) + raw.y * alpha
-        )
+        var usedPrev = [Bool](repeating: false, count: lastHands.count)
+        var result: [HandResult] = []
+
+        for hand in current {
+            // 找到上一帧中距离最近且未被使用的手
+            var bestIdx = -1
+            var bestDist: CGFloat = .infinity
+
+            for (i, prev) in lastHands.enumerated() where !usedPrev[i] {
+                let dx = hand.position.x - prev.position.x
+                let dy = hand.position.y - prev.position.y
+                let d = sqrt(dx * dx + dy * dy)
+                if d < bestDist {
+                    bestDist = d
+                    bestIdx = i
+                }
+            }
+
+            if bestIdx >= 0 {
+                usedPrev[bestIdx] = true
+                let prev = lastHands[bestIdx]
+                let alpha = smoothingFactor
+                let smoothed = CGPoint(
+                    x: prev.position.x * (1 - alpha) + hand.position.x * alpha,
+                    y: prev.position.y * (1 - alpha) + hand.position.y * alpha
+                )
+                var smoothedHand = hand
+                smoothedHand.position = smoothed
+                result.append(smoothedHand)
+            } else {
+                result.append(hand)
+            }
+        }
+
+        return result
     }
 
     /// 丢手保持：手短暂丢失时保留最后位置，避免特效闪烁
