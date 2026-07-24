@@ -5,9 +5,6 @@ on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
-    paths:
-      - 'SpatialAbilityRecorder/**'
-      - '.github/workflows/**'
 
 jobs:
   build-ipa:
@@ -27,17 +24,17 @@ jobs:
 
       - name: 修复 Windows 换行符 (CRLF → LF)
         run: |
-          cd SpatialAbilityRecorder
-          find . \( -name "*.sh" -o -name "*.swift" -o -name "*.metal" -o -name "*.plist" -o -name "*.pbxproj" -o -name "*.json" \) -exec sed -i '' 's/\r$//' {} \;
+          find . \( -name "*.sh" -o -name "*.swift" -o -name "*.metal" -o -name "*.plist" -o -name "*.pbxproj" -o -name "*.json" -o -name "*.yml" -o -name "*.md" -o -name "*.xcscheme" \) -exec sed -i '' 's/\r$//' {} \;
 
-      - name: 列出可用 Scheme（调试用）
+      - name: 列出目录结构（调试用）
         run: |
-          cd SpatialAbilityRecorder
+          echo "=== 仓库根目录 ==="
+          ls -la
+          echo "=== 列出 Scheme ==="
           xcodebuild -list -project SpatialAbilityRecorder.xcodeproj || true
 
       - name: 编译 (未签名)
         run: |
-          cd SpatialAbilityRecorder
           xcodebuild build \
             -project SpatialAbilityRecorder.xcodeproj \
             -scheme SpatialAbilityRecorder \
@@ -52,7 +49,6 @@ jobs:
       - name: 查找编译产物
         id: find_app
         run: |
-          cd SpatialAbilityRecorder
           APP_PATH=$(find build/DerivedData -name "SpatialAbilityRecorder.app" -type d | head -1)
           echo "APP_PATH=$APP_PATH"
           if [ -z "$APP_PATH" ]; then
@@ -63,7 +59,6 @@ jobs:
 
       - name: 打包 IPA
         run: |
-          cd SpatialAbilityRecorder
           APP_PATH="${{ steps.find_app.outputs.app_path }}"
           rm -rf build/Payload
           mkdir -p build/Payload
@@ -77,5 +72,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SpatialAbilityRecorder-ipa
-          path: SpatialAbilityRecorder/build/SpatialAbilityRecorder.ipa
+          path: build/SpatialAbilityRecorder.ipa
           retention-days: 30
