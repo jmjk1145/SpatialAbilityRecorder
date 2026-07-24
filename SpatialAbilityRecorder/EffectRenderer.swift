@@ -11,7 +11,7 @@ struct PortalParams {
     var aspect: Float
     var radius: Float
     var intensity: Float
-    var effectType: Int32     // 0传送门 1护盾 2烈焰 3闪电 4黑洞
+    var effectType: Int32     // 0空间裂缝 1护盾 2烈焰 3闪电 4黑洞
     var isFrontCamera: Int32  // 0后置 1前置
     var _pad0: Float = 0
     var _pad1: Float = 0
@@ -50,7 +50,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
     var trackedPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
     var confidence: Float = 0
     var latestFrameTime: CMTime = .invalid
-    var effectType: Int32 = 0   // 0传送门 1护盾 2烈焰 3闪电 4黑洞
+    var effectType: Int32 = 0   // 0空间裂缝 1护盾 2烈焰 3闪电 4黑洞
     var isFrontCamera: Bool = false  // 当前是否使用前置摄像头
 
     /// 渲染完成回调，返回可用于录制的 CVPixelBuffer 及其时间戳

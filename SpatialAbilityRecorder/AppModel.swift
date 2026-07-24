@@ -21,8 +21,8 @@ final class AppModel: ObservableObject {
     @Published var isUsingFrontCamera = false
 
     /// 特效名称列表（与 shader 中 effectType 对应）
-    let effectNames: [String] = ["空间传送门", "能量护盾", "烈焰能量", "闪电链", "黑洞引力"]
-    let effectIcons: [String] = ["circle.hexagongrid.fill", "shield.lefthalf.filled", "flame.fill", "bolt.fill", "circle.dashed"]
+    let effectNames: [String] = ["空间裂缝", "能量护盾", "烈焰能量", "闪电链", "黑洞引力"]
+    let effectIcons: [String] = ["bolt.fill", "shield.lefthalf.filled", "flame.fill", "bolt.slash.fill", "circle.dashed"]
 
     init() {
         bindPipeline()
