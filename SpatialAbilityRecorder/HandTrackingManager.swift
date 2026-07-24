@@ -403,7 +403,7 @@ final class HandTrackingManager {
                 let prevAngle = prev.rotation
                 let currAngle = hand.rotation
                 let diff = atan2(sin(currAngle - prevAngle), cos(currAngle - prevAngle))
-                let smoothedAngle = prevAngle + diff * alpha
+                let smoothedAngle = prevAngle + diff * Float(alpha)
                 var smoothedHand = hand
                 smoothedHand.position = smoothed
                 smoothedHand.rotation = smoothedAngle
