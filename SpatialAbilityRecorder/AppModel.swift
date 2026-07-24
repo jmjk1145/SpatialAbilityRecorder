@@ -28,8 +28,8 @@ final class AppModel: ObservableObject {
     @Published var isUsingFrontCamera = false
 
     /// 特效名称列表（与 shader 中 effectType 对应）
-    let effectNames: [String] = ["空间裂缝", "能量护盾", "指尖能量网", "闪电链", "黑洞引力", "时空之境"]
-    let effectIcons: [String] = ["bolt.fill", "shield.lefthalf.filled", "hand.point.up.braille.fill", "bolt.slash.fill", "circle.dashed", "circle.hexagongrid.fill"]
+    let effectNames: [String] = ["空间裂缝", "能量护盾", "指尖能量网", "闪电链", "黑洞引力", "时空之境", "烈焰能量"]
+    let effectIcons: [String] = ["bolt.fill", "shield.lefthalf.filled", "hand.point.up.braille.fill", "bolt.slash.fill", "circle.dashed", "circle.hexagongrid.fill", "flame.fill"]
 
     init() {
         bindPipeline()

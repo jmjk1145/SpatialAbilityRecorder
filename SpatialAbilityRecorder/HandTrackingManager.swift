@@ -50,11 +50,11 @@ final class HandTrackingManager {
     /// 丢手保持计数器
     private var lostFrameCount: Int = 0
 
-    /// 最大丢手保持帧数（增强：从 20 提升到 40，约 1.3s，大幅减少特效闪烁）
-    private let maxLostFrames: Int = 40
+    /// 最大丢手保持帧数（降低延迟：40→12，约0.4s，避免手在1-2只之间跳来跳去）
+    private let maxLostFrames: Int = 12
 
-    /// 基础平滑系数（0~1，越大越平滑但延迟越大）
-    private let baseSmoothingFactor: CGFloat = 0.25
+    /// 基础平滑系数（降低延迟：0.25→0.45，更紧跟手部移动）
+    private let baseSmoothingFactor: CGFloat = 0.45
 
     /// 上一帧每只手的速度（用于速度预测）
     private var lastVelocities: [CGPoint] = []
@@ -64,8 +64,8 @@ final class HandTrackingManager {
     private var candidateHands: [HandResult] = []
     /// 每个候选手的连续检测帧数
     private var candidateFrameCounts: [Int] = []
-    /// 确认所需的最小连续帧数（降低瞬时误检）
-    private let minConfirmFrames: Int = 2
+    /// 确认所需的最小连续帧数（降低延迟：2→1，第一帧即确认，解剖学验证已足够过滤误检）
+    private let minConfirmFrames: Int = 1
     /// 已确认手的连续检测帧数（用于稳定性评估）
     private var confirmedFrameCounts: [Int] = []
 
@@ -151,8 +151,8 @@ final class HandTrackingManager {
     private(set) var validFingertipCount: Int = 0
     /// 指尖平滑后的位置（EMA 平滑，减少抖动）
     private var smoothedFingertipPositions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
-    /// 指尖平滑系数
-    private let fingertipSmoothing: CGFloat = 0.35
+    /// 指尖平滑系数（提高：0.35→0.5，更快响应指尖移动减少延迟）
+    private let fingertipSmoothing: CGFloat = 0.5
 
     private let handPoseRequest: VNDetectHumanHandPoseRequest
     private let lock = NSLock()

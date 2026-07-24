@@ -80,7 +80,7 @@ struct PortalParams {
     float  aspect;        // 竖屏宽高比 width/height = 720/1280
     float  radius;        // 特效归一化半径
     float  intensity;     // 特效强度（追踪置信度）
-    int    effectType;    // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境
+    int    effectType;    // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境 6烈焰
     int    isFrontCamera; // 0后置 1前置
     float  handRotation;  // 累积扭曲角度（弧度，随手部活动持续增长）
     float  twistEnergy;   // 扭曲能量（0~1，手部活动时升高，静止时衰减）
@@ -335,13 +335,12 @@ float pointToSegment(float2 p, float2 a, float2 b) {
     return length(pa - ba * h);
 }
 
-// ---- 特效 2：指尖能量网 ----
-// 识别每个指尖位置，在指尖间绘制发光能量节点和连接线，形成能量网络
-// 同手内全配对连接（蛛网），跨手对应指尖连接（能量桥）
+// ---- 特效 2：指尖能量网（星型拓扑：所有指尖连到手掌中心） ----
+// 每根线从指尖出发汇聚到手掌中心，形成放射状能量网络
 float4 effectFingertipNetwork(float2 uv, float2 cameraUV, float2 pos,
                               float dist, float radius, float time, float I, float aspect,
                               int isFront, texture2d<float> cameraTex, sampler s,
-                              constant PortalParams &params, float2 ctr) {
+                              constant PortalParams &params, float2 ctr, float2 ctr1, float2 ctr2) {
     float4 color = cameraTex.sample(s, cameraUV);
 
     // 调色板
@@ -379,6 +378,11 @@ float4 effectFingertipNetwork(float2 uv, float2 cameraUV, float2 pos,
     // 性能优化：远离所有指尖的像素直接返回
     if (minTipDist > 0.5) return color;
 
+    // 手掌中心（星型拓扑的中心节点）
+    float2 handCenters[2];
+    handCenters[0] = ctr1;
+    handCenters[1] = ctr2;
+
     // === 1. 指尖发光节点 ===
     float nodeCore = 0.0;
     float nodeGlow = 0.0;
@@ -394,59 +398,61 @@ float4 effectFingertipNetwork(float2 uv, float2 cameraUV, float2 pos,
         nodeGlow += glow + halo;
     }
 
-    // === 2. 能量连线 ===
+    // === 2. 能量连线（星型：每个指尖 → 手掌中心） ===
     float lineCore = 0.0;
     float lineGlow = 0.0;
     float particleFlow = 0.0;
 
-    // 同手内全配对连接（形成蛛网）
     for (int hand = 0; hand < 2; hand++) {
         int base = hand * 5;
-        for (int a = 0; a < 5; a++) {
-            for (int b = a + 1; b < 5; b++) {
-                int idx1 = base + a;
-                int idx2 = base + b;
-                if (!valid[idx1] || !valid[idx2]) continue;
+        float2 hub = handCenters[hand];
 
-                float2 pa = tips[idx1];
-                float2 pb = tips[idx2];
-                float d = pointToSegment(pos, pa, pb);
+        // 手掌中心节点（比指尖更大的发光点）
+        float hubDist = distance(pos, hub);
+        float hubCore = exp(-pow(hubDist * 60.0, 2.0));
+        float hubGlow = exp(-pow(hubDist * 15.0, 2.0)) * 0.6;
+        nodeCore = max(nodeCore, hubCore);
+        nodeGlow += hubGlow;
 
-                float thickness = 0.003;
-                float core = smoothstep(thickness, 0.0, d);
-                float glow = smoothstep(thickness * 5.0, 0.0, d) * 0.3;
+        // 每个指尖连到手掌中心
+        for (int f = 0; f < 5; f++) {
+            int idx = base + f;
+            if (!valid[idx]) continue;
 
-                lineCore = max(lineCore, core);
-                lineGlow += glow * 0.25;
+            float2 pa = tips[idx];
+            float2 pb = hub;
+            float d = pointToSegment(pos, pa, pb);
 
-                // 流动粒子
-                float2 ba = pb - pa;
-                float lineLen = length(ba);
-                float2 dir = ba / max(lineLen, 0.001);
-                float along = clamp(dot(pos - pa, dir) / max(lineLen, 0.001), 0.0, 1.0);
-                float flow = fract(along * 2.0 - time * 1.2 + float(idx1) * 0.3);
-                float particle = smoothstep(0.04, 0.0, abs(flow - 0.5)) * core;
-                particleFlow += particle * 0.4;
-            }
+            float thickness = 0.0035;
+            float core = smoothstep(thickness, 0.0, d);
+            float glow = smoothstep(thickness * 5.0, 0.0, d) * 0.3;
+
+            lineCore = max(lineCore, core);
+            lineGlow += glow * 0.3;
+
+            // 流动粒子（从指尖流向手掌中心）
+            float2 ba = pb - pa;
+            float lineLen = length(ba);
+            float2 dir = ba / max(lineLen, 0.001);
+            float along = clamp(dot(pos - pa, dir) / max(lineLen, 0.001), 0.0, 1.0);
+            float flow = fract(along * 2.0 - time * 1.5 + float(idx) * 0.3);
+            float particle = smoothstep(0.04, 0.0, abs(flow - 0.5)) * core;
+            particleFlow += particle * 0.5;
         }
     }
 
-    // 跨手连接（对应指尖：拇指-拇指，食指-食指...）
-    for (int i = 0; i < 5; i++) {
-        int idx1 = i;
-        int idx2 = i + 5;
-        if (!valid[idx1] || !valid[idx2]) continue;
-
-        float2 pa = tips[idx1];
-        float2 pb = tips[idx2];
+    // 跨手连接：两个手掌中心之间
+    if (params.hasHand2 > 0.5) {
+        float2 pa = handCenters[0];
+        float2 pb = handCenters[1];
         float d = pointToSegment(pos, pa, pb);
 
-        float thickness = 0.004;
+        float thickness = 0.005;
         float core = smoothstep(thickness, 0.0, d);
-        float glow = smoothstep(thickness * 4.0, 0.0, d) * 0.4;
+        float glow = smoothstep(thickness * 4.0, 0.0, d) * 0.5;
 
         lineCore = max(lineCore, core);
-        lineGlow += glow * 0.5;
+        lineGlow += glow * 0.6;
 
         // 双向流动粒子
         float2 ba = pb - pa;
@@ -457,7 +463,7 @@ float4 effectFingertipNetwork(float2 uv, float2 cameraUV, float2 pos,
         float flow2 = fract(along * 3.0 + time * 1.0);
         float particle = smoothstep(0.03, 0.0, abs(flow1 - 0.5)) * core;
         particle += smoothstep(0.03, 0.0, abs(flow2 - 0.5)) * core;
-        particleFlow += particle * 0.6;
+        particleFlow += particle * 0.8;
     }
 
     // === 3. 指尖附近空间扭曲 ===
@@ -624,6 +630,59 @@ float4 effectBlackHole(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
     return color;
 }
 
+// ---- 特效 6：烈焰能量（原始特效，保留作为独立特效） ----
+float4 effectFire(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
+                  float dist, float radius, float time, float I, float aspect,
+                  int isFront, texture2d<float> cameraTex, sampler s) {
+    float4 color = cameraTex.sample(s, cameraUV);
+
+    // 火焰噪声（向上飘动）
+    float2 fireUv = (pos - ctr) * float2(8.0, 8.0);
+    fireUv.y -= time * 1.5;
+    float n = fbm(fireUv + float2(time * 0.3, 0.0));
+    float n2 = fbm(fireUv * 2.0 + float2(0.0, -time * 2.0));
+
+    float fireShape = smoothstep(radius, 0.0, dist);
+    float upFactor = smoothstep(0.0, radius, pos.y - ctr.y + radius * 0.3);
+    fireShape *= upFactor * 0.7 + 0.3;
+
+    float fire = n * fireShape * 1.5;
+    fire = clamp(fire, 0.0, 1.5);
+
+    float3 hotColor  = float3(1.0, 0.95, 0.8);
+    float3 midColor  = float3(1.0, 0.6, 0.15);
+    float3 coolColor = float3(0.9, 0.2, 0.05);
+
+    float3 fireColor = mix(coolColor, midColor, smoothstep(0.0, 0.5, fire));
+    fireColor = mix(fireColor, hotColor, smoothstep(0.5, 0.9, fire));
+
+    float2 sparkUv = pos - ctr;
+    float sparkN = hash21(floor(sparkUv * 20.0) + floor(time * 3.0));
+    float spark = step(0.96, sparkN) * fireShape;
+
+    float fireMask = fire * I * 0.8;
+    color.rgb = mix(color.rgb, fireColor, fireMask);
+    color.rgb += fireColor * fire * 0.3 * I;
+    color.rgb += hotColor * spark * 0.5 * I;
+
+    // 边缘热扭曲
+    float distortMask = smoothstep(radius, radius - 0.05, dist) * I;
+    float distort = n2 * 0.02;
+    float2 distortPortraitUV = uv + float2(distort, -distort * 0.5) * distortMask;
+    distortPortraitUV = clamp(distortPortraitUV, 0.0, 1.0);
+    float2 distortCamUV = toCameraUV(distortPortraitUV, isFront);
+    float4 distorted = cameraTex.sample(s, distortCamUV);
+    color.rgb = mix(color.rgb, distorted.rgb, distortMask * 0.4);
+
+    float core = exp(-pow(dist * 18.0, 2.0));
+    color.rgb += float3(1.0, 0.9, 0.6) * core * 0.5 * I;
+
+    float outerGlow = exp(-pow(max(dist - radius * 0.8, 0.0) * 10.0, 2.0));
+    color.rgb += float3(1.0, 0.4, 0.1) * outerGlow * 0.4 * I;
+
+    return color;
+}
+
 // MARK: - 主片元着色器
 
 // HSV → RGB 转换（用于彩色渐变）
@@ -638,7 +697,7 @@ float3 hsv2rgb(float3 c) {
 float4 effectSpacetimeRealm(float2 uv, float2 cameraUV, float2 pos,
                              float dist, float radius, float time, float I, float aspect,
                              int isFront, texture2d<float> cameraTex, sampler s,
-                             constant PortalParams &params, float2 ctr) {
+                             constant PortalParams &params, float2 ctr, float2 ctr1, float2 ctr2) {
 
     // 提取指尖位置
     float2 tips[10];
@@ -737,78 +796,77 @@ float4 effectSpacetimeRealm(float2 uv, float2 cameraUV, float2 pos,
         color.rgb += coreColor * coreGlow * 0.8 * I;
     }
 
-    // === 3. 彩色渐变指尖连接线 ===
+    // === 3. 彩色渐变指尖连接线（星型：指尖 → 手掌中心） ===
     float lineIntensity = 0.0;
     float3 lineColor = float3(0.0);
     float particleFlow = 0.0;
     float3 particleColor = float3(0.0);
 
-    // 同手内连接（蛛网）
+    // 手掌中心
+    float2 handCenters[2];
+    handCenters[0] = ctr1;
+    handCenters[1] = ctr2;
+
     for (int hand = 0; hand < 2; hand++) {
         int base = hand * 5;
-        for (int a = 0; a < 5; a++) {
-            for (int b = a + 1; b < 5; b++) {
-                int idx1 = base + a;
-                int idx2 = base + b;
-                if (!valid[idx1] || !valid[idx2]) continue;
+        float2 hub = handCenters[hand];
 
-                float2 pa = tips[idx1];
-                float2 pb = tips[idx2];
-                float d = pointToSegment(pos, pa, pb);
+        for (int f = 0; f < 5; f++) {
+            int idx = base + f;
+            if (!valid[idx]) continue;
 
-                float thickness = 0.0035;
-                float core = smoothstep(thickness, 0.0, d);
-                float glow = smoothstep(thickness * 4.0, 0.0, d) * 0.3;
+            float2 pa = tips[idx];
+            float2 pb = hub;
+            float d = pointToSegment(pos, pa, pb);
 
-                // 沿线的渐变色（从 idx1 的色到 idx2 的色）
-                float2 ba = pb - pa;
-                float lineLen = length(ba);
-                float2 dir = ba / max(lineLen, 0.001);
-                float along = clamp(dot(pos - pa, dir) / max(lineLen, 0.001), 0.0, 1.0);
+            float thickness = 0.0035;
+            float core = smoothstep(thickness, 0.0, d);
+            float glow = smoothstep(thickness * 4.0, 0.0, d) * 0.3;
 
-                float hue1 = float(idx1) / 10.0 + time * 0.08;
-                float hue2 = float(idx2) / 10.0 + time * 0.08;
-                float lineHue = mix(hue1, hue2, along);
-                float3 gradColor = hsv2rgb(float3(lineHue, 0.7, 1.0));
+            // 沿线的渐变色（从指尖色到手掌中心色）
+            float2 ba = pb - pa;
+            float lineLen = length(ba);
+            float2 dir = ba / max(lineLen, 0.001);
+            float along = clamp(dot(pos - pa, dir) / max(lineLen, 0.001), 0.0, 1.0);
 
-                lineIntensity = max(lineIntensity, core + glow * 0.5);
-                lineColor += gradColor * (core * 1.5 + glow * 0.3);
+            float hue1 = float(idx) / 10.0 + time * 0.08;
+            float hubHue = 0.5 + hand * 0.15 + time * 0.08;
+            float lineHue = mix(hue1, hubHue, along);
+            float3 gradColor = hsv2rgb(float3(lineHue, 0.7, 1.0));
 
-                // 流动粒子
-                float flow = fract(along * 2.0 - time * 1.5 + float(idx1) * 0.3);
-                float particle = smoothstep(0.04, 0.0, abs(flow - 0.5)) * core;
-                particleFlow += particle;
-                particleColor += hsv2rgb(float3(lineHue + 0.3, 0.5, 1.0)) * particle * 0.5;
-            }
+            lineIntensity = max(lineIntensity, core + glow * 0.5);
+            lineColor += gradColor * (core * 1.8 + glow * 0.3);
+
+            // 流动粒子（从指尖流向手掌中心）
+            float flow = fract(along * 2.0 - time * 1.5 + float(idx) * 0.3);
+            float particle = smoothstep(0.04, 0.0, abs(flow - 0.5)) * core;
+            particleFlow += particle;
+            particleColor += hsv2rgb(float3(lineHue + 0.3, 0.5, 1.0)) * particle * 0.6;
         }
     }
 
-    // 跨手连接
-    for (int i = 0; i < 5; i++) {
-        int idx1 = i;
-        int idx2 = i + 5;
-        if (!valid[idx1] || !valid[idx2]) continue;
-
-        float2 pa = tips[idx1];
-        float2 pb = tips[idx2];
+    // 跨手连接：两个手掌中心之间
+    if (params.hasHand2 > 0.5) {
+        float2 pa = handCenters[0];
+        float2 pb = handCenters[1];
         float d = pointToSegment(pos, pa, pb);
 
-        float thickness = 0.004;
+        float thickness = 0.005;
         float core = smoothstep(thickness, 0.0, d);
-        float glow = smoothstep(thickness * 3.5, 0.0, d) * 0.4;
+        float glow = smoothstep(thickness * 3.5, 0.0, d) * 0.5;
 
         float2 ba = pb - pa;
         float lineLen = length(ba);
         float2 dir = ba / max(lineLen, 0.001);
         float along = clamp(dot(pos - pa, dir) / max(lineLen, 0.001), 0.0, 1.0);
 
-        float hue1 = float(idx1) / 10.0 + time * 0.08;
-        float hue2 = float(idx2) / 10.0 + time * 0.08;
+        float hue1 = 0.5 + time * 0.08;
+        float hue2 = 0.65 + time * 0.08;
         float lineHue = mix(hue1, hue2, along);
         float3 gradColor = hsv2rgb(float3(lineHue, 0.8, 1.0));
 
         lineIntensity = max(lineIntensity, core + glow * 0.5);
-        lineColor += gradColor * (core * 2.0 + glow * 0.4);
+        lineColor += gradColor * (core * 2.5 + glow * 0.5);
 
         // 双向流动粒子
         float flow1 = fract(along * 3.0 - time * 1.5);
@@ -816,7 +874,7 @@ float4 effectSpacetimeRealm(float2 uv, float2 cameraUV, float2 pos,
         float particle = smoothstep(0.03, 0.0, abs(flow1 - 0.5)) * core;
         particle += smoothstep(0.03, 0.0, abs(flow2 - 0.5)) * core;
         particleFlow += particle;
-        particleColor += hsv2rgb(float3(lineHue + 0.3, 0.6, 1.0)) * particle * 0.8;
+        particleColor += hsv2rgb(float3(lineHue + 0.3, 0.6, 1.0)) * particle * 1.0;
     }
 
     // 应用连接线颜色
@@ -895,13 +953,15 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
         case 1:
             return effectShield(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         case 2:
-            return effectFingertipNetwork(uv, cameraUV, pos, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, params, ctr);
+            return effectFingertipNetwork(uv, cameraUV, pos, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, params, ctr, ctr1, ctr2);
         case 3:
             return effectLightning(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         case 4:
             return effectBlackHole(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         case 5:
-            return effectSpacetimeRealm(uv, cameraUV, pos, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, params, ctr);
+            return effectSpacetimeRealm(uv, cameraUV, pos, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, params, ctr, ctr1, ctr2);
+        case 6:
+            return effectFire(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         default:
             return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2, params.handRotation, params.twistEnergy);
     }
