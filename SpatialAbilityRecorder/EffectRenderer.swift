@@ -14,10 +14,22 @@ struct PortalParams {
     var aspect: Float
     var radius: Float
     var intensity: Float
-    var effectType: Int32     // 0空间裂缝 1护盾 2烈焰 3闪电 4黑洞
+    var effectType: Int32     // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞
     var isFrontCamera: Int32  // 0后置 1前置
     var handRotation: Float   // 累积扭曲角度（弧度）
     var twistEnergy: Float    // 扭曲能量（0~1）
+    // 10个指尖位置（每手5个：拇指/食指/中指/无名指/小指），-1=无效
+    var tip0X: Float = -1; var tip0Y: Float = -1
+    var tip1X: Float = -1; var tip1Y: Float = -1
+    var tip2X: Float = -1; var tip2Y: Float = -1
+    var tip3X: Float = -1; var tip3Y: Float = -1
+    var tip4X: Float = -1; var tip4Y: Float = -1
+    var tip5X: Float = -1; var tip5Y: Float = -1
+    var tip6X: Float = -1; var tip6Y: Float = -1
+    var tip7X: Float = -1; var tip7Y: Float = -1
+    var tip8X: Float = -1; var tip8Y: Float = -1
+    var tip9X: Float = -1; var tip9Y: Float = -1
+    var fingertipCount: Float = 0
 }
 
 /// 包装 CVMetalTexture + MTLTexture，确保 CVMetalTexture 在命令缓冲执行期间不被释放。
@@ -55,11 +67,13 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
     var hasHand2: Bool = false                           // 是否检测到第二只手
     var confidence: Float = 0
     var latestFrameTime: CMTime = .invalid
-    var effectType: Int32 = 0   // 0空间裂缝 1护盾 2烈焰 3闪电 4黑洞
+    var effectType: Int32 = 0   // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞
     var isFrontCamera: Bool = false  // 当前是否使用前置摄像头
     var effectRadius: Float = 0.18  // 动态特效半径（由 HandTrackingManager 计算）
     var handRotation: Float = 0  // 累积扭曲角度（弧度）
     var twistEnergy: Float = 0   // 扭曲能量（0~1）
+    var fingertipPositions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+    var validFingertipCount: Int = 0
 
     /// 渲染完成回调，返回可用于录制的 CVPixelBuffer 及其时间戳
     var recordingCallback: ((CVPixelBuffer, CMTime) -> Void)?
@@ -190,7 +204,18 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
                 effectType: effectType,
                 isFrontCamera: isFrontCamera ? 1 : 0,
                 handRotation: handRotation,
-                twistEnergy: twistEnergy
+                twistEnergy: twistEnergy,
+                tip0X: Float(fingertipPositions[0].x), tip0Y: Float(fingertipPositions[0].y),
+                tip1X: Float(fingertipPositions[1].x), tip1Y: Float(fingertipPositions[1].y),
+                tip2X: Float(fingertipPositions[2].x), tip2Y: Float(fingertipPositions[2].y),
+                tip3X: Float(fingertipPositions[3].x), tip3Y: Float(fingertipPositions[3].y),
+                tip4X: Float(fingertipPositions[4].x), tip4Y: Float(fingertipPositions[4].y),
+                tip5X: Float(fingertipPositions[5].x), tip5Y: Float(fingertipPositions[5].y),
+                tip6X: Float(fingertipPositions[6].x), tip6Y: Float(fingertipPositions[6].y),
+                tip7X: Float(fingertipPositions[7].x), tip7Y: Float(fingertipPositions[7].y),
+                tip8X: Float(fingertipPositions[8].x), tip8Y: Float(fingertipPositions[8].y),
+                tip9X: Float(fingertipPositions[9].x), tip9Y: Float(fingertipPositions[9].y),
+                fingertipCount: Float(validFingertipCount)
             )
             if !hasActiveTracking {
                 // 未追踪时不显示特效（intensity = 0）

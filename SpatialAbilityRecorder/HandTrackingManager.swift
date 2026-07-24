@@ -134,6 +134,12 @@ final class HandTrackingManager {
         _twistEnergy
     }
 
+    // MARK: - 指尖位置（10个，每只手5个：拇指/食指/中指/无名指/小指）
+    // 无效指尖位置为 (-1, -1)
+    // 索引：手1[0-4] 拇指/食指/中指/无名指/小指，手2[5-9] 同上
+    private(set) var fingertipPositions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+    private(set) var validFingertipCount: Int = 0
+
     private let handPoseRequest: VNDetectHumanHandPoseRequest
     private let lock = NSLock()
 
@@ -194,6 +200,9 @@ final class HandTrackingManager {
         // 帧间匹配 + 自适应平滑 + 速度预测
         let smoothedResults = smoothHandsAdaptive(topResults)
 
+        // 提取指尖位置（用于特效2：指尖能量网）
+        extractFingertips(observations)
+
         // 更新扭曲能量系统
         updateTwistEnergy(smoothedResults)
 
@@ -233,6 +242,35 @@ final class HandTrackingManager {
 
         lastPrimaryPosition = pos
         lastPrimaryRotation = rot
+    }
+
+    // MARK: - 指尖提取
+
+    /// 从 Vision 观测结果中提取 10 个指尖位置
+    /// 索引：手1[0-4]=拇指/食指/中指/无名指/小指，手2[5-9]=同上
+    private func extractFingertips(_ observations: [VNHumanHandPoseObservation]) {
+        var positions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+        var count = 0
+
+        let fingertipJoints: [VNHumanHandPoseObservation.JointName] = [
+            .thumbTip, .indexTip, .middleTip, .ringTip, .littleTip
+        ]
+
+        for (handIdx, obs) in observations.prefix(2).enumerated() {
+            guard let allPoints = try? obs.recognizedPoints(.all) else { continue }
+
+            for (fingerIdx, joint) in fingertipJoints.enumerated() {
+                let tipIdx = handIdx * 5 + fingerIdx
+                if let point = allPoints[joint], point.confidence > 0 {
+                    // Vision: 左下角原点 y向上 → 视图: 左上角原点 y向下
+                    positions[tipIdx] = CGPoint(x: point.location.x, y: 1.0 - point.location.y)
+                    count += 1
+                }
+            }
+        }
+
+        fingertipPositions = positions
+        validFingertipCount = count
     }
 
     // MARK: - 增强识别：关节计算
@@ -526,5 +564,7 @@ final class HandTrackingManager {
         _twistEnergy = 0
         lastPrimaryPosition = nil
         lastPrimaryRotation = 0
+        fingertipPositions = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+        validFingertipCount = 0
     }
 }

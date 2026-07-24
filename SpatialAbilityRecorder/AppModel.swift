@@ -28,8 +28,8 @@ final class AppModel: ObservableObject {
     @Published var isUsingFrontCamera = false
 
     /// 特效名称列表（与 shader 中 effectType 对应）
-    let effectNames: [String] = ["空间裂缝", "能量护盾", "烈焰能量", "闪电链", "黑洞引力"]
-    let effectIcons: [String] = ["bolt.fill", "shield.lefthalf.filled", "flame.fill", "bolt.slash.fill", "circle.dashed"]
+    let effectNames: [String] = ["空间裂缝", "能量护盾", "指尖能量网", "闪电链", "黑洞引力"]
+    let effectIcons: [String] = ["bolt.fill", "shield.lefthalf.filled", "hand.point.up.braille.fill", "bolt.slash.fill", "circle.dashed"]
 
     init() {
         bindPipeline()
@@ -62,6 +62,8 @@ final class AppModel: ObservableObject {
             self.renderer.effectRadius = self.handTrackingManager.dynamicRadius
             self.renderer.handRotation = self.handTrackingManager.primaryHandRotation
             self.renderer.twistEnergy = self.handTrackingManager.twistEnergy
+            self.renderer.fingertipPositions = self.handTrackingManager.fingertipPositions
+            self.renderer.validFingertipCount = self.handTrackingManager.validFingertipCount
             self.renderer.setTrackingActive(self.handTrackingManager.hasHand)
 
             // 3. 追踪结果回主线程更新 UI
