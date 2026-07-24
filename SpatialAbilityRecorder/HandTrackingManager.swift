@@ -166,9 +166,7 @@ final class HandTrackingManager {
 
     /// 计算手部中心和大小：使用多关键点加权质心
     private func computeHandCenterAndSize(_ obs: VNHumanHandPoseObservation) -> (CGPoint, Float) {
-        let allPoints = obs.recognizedPoints(.all)
-
-        guard !allPoints.isEmpty else {
+        guard let allPoints = try? obs.recognizedPoints(.all), !allPoints.isEmpty else {
             return (CGPoint(x: 0.5, y: 0.5), 0.1)
         }
 
@@ -225,7 +223,9 @@ final class HandTrackingManager {
 
     /// 手势识别
     private func detectGesture(_ obs: VNHumanHandPoseObservation) -> HandGesture {
-        let allPoints = obs.recognizedPoints(.all)
+        guard let allPoints = try? obs.recognizedPoints(.all) else {
+            return .unknown
+        }
 
         guard let wrist = allPoints[.wrist], wrist.confidence > 0,
               let indexTip = allPoints[.indexTip], indexTip.confidence > 0,

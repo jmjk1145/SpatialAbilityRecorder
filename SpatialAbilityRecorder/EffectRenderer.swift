@@ -212,7 +212,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
 
         // ---- 3. 将离屏纹理拷贝到录制缓冲（UV 已翻转，直接使用 blitPipeline） ----
         if let recTex = recordingTexRef?.texture,
-           let recBuffer = recordingBuffer,
+           recordingBuffer != nil,
            blitPipeline != nil {
             let recPass = MTLRenderPassDescriptor()
             recPass.colorAttachments[0].texture = recTex
