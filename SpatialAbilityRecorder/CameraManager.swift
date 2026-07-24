@@ -83,13 +83,8 @@ final class CameraManager: NSObject {
 
         session.commitConfiguration()
 
-        // 记录实际输出尺寸
-        if let conn = videoOutput.connection(with: .video),
-           let desc = conn.videoFormatDescription {
-            let dimensions = CMVideoFormatDescriptionGetDimensions(desc)
-            // portrait 模式下宽高互换
-            outputSize = CGSize(width: CGFloat(dimensions.height), height: CGFloat(dimensions.width))
-        }
+        // 记录实际输出尺寸（基于 sessionPreset .hd1280x720，portrait 模式宽高互换）
+        outputSize = CGSize(width: 720, height: 1280)
 
         isConfigured = true
     }
