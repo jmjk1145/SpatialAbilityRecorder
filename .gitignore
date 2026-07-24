@@ -1,0 +1,23 @@
+# Build 产物
+build/
+DerivedData/
+*.ipa
+*.app
+*.dSYM
+
+# macOS
+.DS_Store
+
+# Xcode 用户数据
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+*.xcworkspace/xcuserdata/
+
+# Swift Package Manager
+.swiftpm/
+.build/
+Package.resolved
+
+# CocoaPods
+Pods/

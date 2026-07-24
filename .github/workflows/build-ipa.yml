@@ -1,0 +1,81 @@
+name: 构建 IPA
+
+# 触发条件：手动运行 或 推送到 main/master 分支
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'SpatialAbilityRecorder/**'
+      - '.github/workflows/**'
+
+jobs:
+  build-ipa:
+    name: 编译并打包 IPA
+    runs-on: macos-14
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 显示环境信息
+        run: |
+          echo "=== Xcode 版本 ==="
+          xcodebuild -version
+          echo "=== macOS 版本 ==="
+          sw_vers
+
+      - name: 修复 Windows 换行符 (CRLF → LF)
+        run: |
+          cd SpatialAbilityRecorder
+          find . \( -name "*.sh" -o -name "*.swift" -o -name "*.metal" -o -name "*.plist" -o -name "*.pbxproj" -o -name "*.json" \) -exec sed -i '' 's/\r$//' {} \;
+
+      - name: 列出可用 Scheme（调试用）
+        run: |
+          cd SpatialAbilityRecorder
+          xcodebuild -list -project SpatialAbilityRecorder.xcodeproj || true
+
+      - name: 编译 (未签名)
+        run: |
+          cd SpatialAbilityRecorder
+          xcodebuild build \
+            -project SpatialAbilityRecorder.xcodeproj \
+            -scheme SpatialAbilityRecorder \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: 查找编译产物
+        id: find_app
+        run: |
+          cd SpatialAbilityRecorder
+          APP_PATH=$(find build/DerivedData -name "SpatialAbilityRecorder.app" -type d | head -1)
+          echo "APP_PATH=$APP_PATH"
+          if [ -z "$APP_PATH" ]; then
+            echo "错误：未找到 .app 产物"
+            exit 1
+          fi
+          echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
+
+      - name: 打包 IPA
+        run: |
+          cd SpatialAbilityRecorder
+          APP_PATH="${{ steps.find_app.outputs.app_path }}"
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R "$APP_PATH" build/Payload/
+          cd build
+          rm -f SpatialAbilityRecorder.ipa
+          zip -r -q SpatialAbilityRecorder.ipa Payload
+          echo "打包完成: $(ls -lh SpatialAbilityRecorder.ipa)"
+
+      - name: 上传 IPA 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpatialAbilityRecorder-ipa
+          path: SpatialAbilityRecorder/build/SpatialAbilityRecorder.ipa
+          retention-days: 30

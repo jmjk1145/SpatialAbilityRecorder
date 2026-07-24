@@ -1,0 +1,33 @@
+name: SpatialAbilityRecorder
+options:
+  bundleIdPrefix: com.spatialability
+  deploymentTarget:
+    iOS: "15.0"
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    GENERATE_INFOPLIST_FILE: NO
+    INFOPLIST_FILE: SpatialAbilityRecorder/Info.plist
+    ENABLE_PREVIEWS: YES
+    CODE_SIGN_STYLE: Automatic
+targets:
+  SpatialAbilityRecorder:
+    type: application
+    platform: iOS
+    sources:
+      - path: SpatialAbilityRecorder
+        excludes:
+          - "Info.plist"
+    resources:
+      - SpatialAbilityRecorder/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.spatialability.recorder
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        INFOPLIST_FILE: SpatialAbilityRecorder/Info.plist
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
