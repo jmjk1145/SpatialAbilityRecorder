@@ -80,7 +80,7 @@ struct PortalParams {
     float  aspect;        // 竖屏宽高比 width/height = 720/1280
     float  radius;        // 特效归一化半径
     float  intensity;     // 特效强度（追踪置信度）
-    int    effectType;    // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞
+    int    effectType;    // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境
     int    isFrontCamera; // 0后置 1前置
     float  handRotation;  // 累积扭曲角度（弧度，随手部活动持续增长）
     float  twistEnergy;   // 扭曲能量（0~1，手部活动时升高，静止时衰减）
@@ -626,6 +626,227 @@ float4 effectBlackHole(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
 
 // MARK: - 主片元着色器
 
+// HSV → RGB 转换（用于彩色渐变）
+float3 hsv2rgb(float3 c) {
+    float4 K = float4(1.0, 2.0/3.0, 1.0/3.0, 3.0);
+    float3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+// ---- 特效 5：时空之境（液态玻璃 + 彩色渐变 + 指尖连接） ----
+// iOS 26 Liquid Glass 风格：半透明多层玻璃 + 彩虹渐变指尖连接 + 折射模糊
+float4 effectSpacetimeRealm(float2 uv, float2 cameraUV, float2 pos,
+                             float dist, float radius, float time, float I, float aspect,
+                             int isFront, texture2d<float> cameraTex, sampler s,
+                             constant PortalParams &params, float2 ctr) {
+
+    // 提取指尖位置
+    float2 tips[10];
+    bool valid[10];
+    tips[0] = float2(params.tip0X * aspect, params.tip0Y); valid[0] = params.tip0X >= 0.0;
+    tips[1] = float2(params.tip1X * aspect, params.tip1Y); valid[1] = params.tip1X >= 0.0;
+    tips[2] = float2(params.tip2X * aspect, params.tip2Y); valid[2] = params.tip2X >= 0.0;
+    tips[3] = float2(params.tip3X * aspect, params.tip3Y); valid[3] = params.tip3X >= 0.0;
+    tips[4] = float2(params.tip4X * aspect, params.tip4Y); valid[4] = params.tip4X >= 0.0;
+    tips[5] = float2(params.tip5X * aspect, params.tip5Y); valid[5] = params.tip5X >= 0.0;
+    tips[6] = float2(params.tip6X * aspect, params.tip6Y); valid[6] = params.tip6X >= 0.0;
+    tips[7] = float2(params.tip7X * aspect, params.tip7Y); valid[7] = params.tip7X >= 0.0;
+    tips[8] = float2(params.tip8X * aspect, params.tip8Y); valid[8] = params.tip8X >= 0.0;
+    tips[9] = float2(params.tip9X * aspect, params.tip9Y); valid[9] = params.tip9X >= 0.0;
+
+    bool anyValid = false;
+    for (int i = 0; i < 10; i++) {
+        if (valid[i]) { anyValid = true; break; }
+    }
+
+    // 基础颜色：相机采样
+    float4 color = cameraTex.sample(s, cameraUV);
+
+    if (!anyValid) return color;
+
+    // === 1. 找到最近的指尖 ===
+    float minTipDist = 999.0;
+    int nearestTip = -1;
+    for (int i = 0; i < 10; i++) {
+        if (!valid[i]) continue;
+        float d = distance(pos, tips[i]);
+        if (d < minTipDist) {
+            minTipDist = d;
+            nearestTip = i;
+        }
+    }
+
+    // 性能优化：远离所有指尖的像素跳过玻璃效果
+    float glassRadius = 0.12;
+    bool nearTip = (nearestTip >= 0) && (minTipDist < glassRadius);
+
+    // === 2. 液态玻璃效果（iOS 26 Liquid Glass 风格） ===
+    if (nearTip) {
+        float2 tipPos = tips[nearestTip];
+        float2 dirFromTip = pos - tipPos;
+        float tipDist = length(dirFromTip);
+        float glassFalloff = 1.0 - smoothstep(0.0, glassRadius, tipDist);
+        glassFalloff = pow(glassFalloff, 0.8);
+
+        // 折射：通过玻璃看后面的画面，产生扭曲
+        float2 refractDir = normalize(dirFromTip);
+        float refractStrength = glassFalloff * 0.015 * I;
+        float2 refractUV = uv + refractDir * refractStrength;
+        refractUV = clamp(refractUV, 0.0, 1.0);
+        float2 refractCamUV = toCameraUV(refractUV, isFront);
+
+        // 毛玻璃模糊：多方向采样取平均
+        float blurRadius = 0.002 * glassFalloff;
+        float2 blurOffsets[6] = {
+            float2(1.0, 0.0), float2(-1.0, 0.0),
+            float2(0.0, 1.0), float2(0.0, -1.0),
+            float2(0.707, 0.707), float2(-0.707, -0.707)
+        };
+        float4 blurred = float4(0.0);
+        for (int b = 0; b < 6; b++) {
+            float2 blurUV = clamp(refractUV + blurOffsets[b] * blurRadius, 0.0, 1.0);
+            blurred += cameraTex.sample(s, toCameraUV(blurUV, isFront));
+        }
+        blurred /= 6.0;
+
+        // 混合折射和模糊 = 液态玻璃效果
+        float4 glassColor = mix(blurred, cameraTex.sample(s, refractCamUV), 0.4);
+
+        // 彩色渐变叠加：每个指尖有不同的色调
+        float hue = float(nearestTip) / 10.0 + time * 0.08;
+        float3 gradientColor = hsv2rgb(float3(hue, 0.6, 1.0));
+
+        // 半透明玻璃混合（iOS 26 风格：通透但有色彩）
+        float glassAlpha = glassFalloff * 0.45 * I;
+        color.rgb = mix(color.rgb, glassColor.rgb * 0.8 + gradientColor * 0.2, glassAlpha);
+
+        // 玻璃边缘高光（液态玻璃的标志性边缘光）
+        float edgeDist = tipDist / glassRadius;
+        float edgeHighlight = smoothstep(0.7, 0.95, edgeDist) * (1.0 - smoothstep(0.95, 1.0, edgeDist));
+        color.rgb += gradientColor * edgeHighlight * 2.5 * I;
+
+        // 内部光泽（玻璃球顶部的反光）
+        float2 lightDir = normalize(float2(0.3, -0.5));
+        float specular = max(dot(normalize(dirFromTip), lightDir), 0.0);
+        specular = pow(specular, 8.0) * glassFalloff;
+        color.rgb += float3(1.0, 1.0, 1.0) * specular * 0.6 * I;
+
+        // 玻璃中心光晕
+        float coreGlow = exp(-pow(tipDist * 30.0, 2.0));
+        float3 coreColor = hsv2rgb(float3(hue + 0.5, 0.4, 1.0));
+        color.rgb += coreColor * coreGlow * 0.8 * I;
+    }
+
+    // === 3. 彩色渐变指尖连接线 ===
+    float lineIntensity = 0.0;
+    float3 lineColor = float3(0.0);
+    float particleFlow = 0.0;
+    float3 particleColor = float3(0.0);
+
+    // 同手内连接（蛛网）
+    for (int hand = 0; hand < 2; hand++) {
+        int base = hand * 5;
+        for (int a = 0; a < 5; a++) {
+            for (int b = a + 1; b < 5; b++) {
+                int idx1 = base + a;
+                int idx2 = base + b;
+                if (!valid[idx1] || !valid[idx2]) continue;
+
+                float2 pa = tips[idx1];
+                float2 pb = tips[idx2];
+                float d = pointToSegment(pos, pa, pb);
+
+                float thickness = 0.0035;
+                float core = smoothstep(thickness, 0.0, d);
+                float glow = smoothstep(thickness * 4.0, 0.0, d) * 0.3;
+
+                // 沿线的渐变色（从 idx1 的色到 idx2 的色）
+                float2 ba = pb - pa;
+                float lineLen = length(ba);
+                float2 dir = ba / max(lineLen, 0.001);
+                float along = clamp(dot(pos - pa, dir) / max(lineLen, 0.001), 0.0, 1.0);
+
+                float hue1 = float(idx1) / 10.0 + time * 0.08;
+                float hue2 = float(idx2) / 10.0 + time * 0.08;
+                float lineHue = mix(hue1, hue2, along);
+                float3 gradColor = hsv2rgb(float3(lineHue, 0.7, 1.0));
+
+                lineIntensity = max(lineIntensity, core + glow * 0.5);
+                lineColor += gradColor * (core * 1.5 + glow * 0.3);
+
+                // 流动粒子
+                float flow = fract(along * 2.0 - time * 1.5 + float(idx1) * 0.3);
+                float particle = smoothstep(0.04, 0.0, abs(flow - 0.5)) * core;
+                particleFlow += particle;
+                particleColor += hsv2rgb(float3(lineHue + 0.3, 0.5, 1.0)) * particle * 0.5;
+            }
+        }
+    }
+
+    // 跨手连接
+    for (int i = 0; i < 5; i++) {
+        int idx1 = i;
+        int idx2 = i + 5;
+        if (!valid[idx1] || !valid[idx2]) continue;
+
+        float2 pa = tips[idx1];
+        float2 pb = tips[idx2];
+        float d = pointToSegment(pos, pa, pb);
+
+        float thickness = 0.004;
+        float core = smoothstep(thickness, 0.0, d);
+        float glow = smoothstep(thickness * 3.5, 0.0, d) * 0.4;
+
+        float2 ba = pb - pa;
+        float lineLen = length(ba);
+        float2 dir = ba / max(lineLen, 0.001);
+        float along = clamp(dot(pos - pa, dir) / max(lineLen, 0.001), 0.0, 1.0);
+
+        float hue1 = float(idx1) / 10.0 + time * 0.08;
+        float hue2 = float(idx2) / 10.0 + time * 0.08;
+        float lineHue = mix(hue1, hue2, along);
+        float3 gradColor = hsv2rgb(float3(lineHue, 0.8, 1.0));
+
+        lineIntensity = max(lineIntensity, core + glow * 0.5);
+        lineColor += gradColor * (core * 2.0 + glow * 0.4);
+
+        // 双向流动粒子
+        float flow1 = fract(along * 3.0 - time * 1.5);
+        float flow2 = fract(along * 3.0 + time * 1.0);
+        float particle = smoothstep(0.03, 0.0, abs(flow1 - 0.5)) * core;
+        particle += smoothstep(0.03, 0.0, abs(flow2 - 0.5)) * core;
+        particleFlow += particle;
+        particleColor += hsv2rgb(float3(lineHue + 0.3, 0.6, 1.0)) * particle * 0.8;
+    }
+
+    // 应用连接线颜色
+    color.rgb += lineColor * I;
+    color.rgb += particleColor * I;
+
+    // === 4. 能量场背景辉光 ===
+    float fieldGlow = 0.0;
+    float3 fieldColor = float3(0.0);
+    for (int i = 0; i < 10; i++) {
+        if (!valid[i]) continue;
+        float d = distance(pos, tips[i]);
+        float glow = exp(-pow(d * 6.0, 2.0)) * 0.08;
+        fieldGlow += glow;
+        float hue = float(i) / 10.0 + time * 0.08;
+        fieldColor += hsv2rgb(float3(hue, 0.5, 1.0)) * glow;
+    }
+    fieldGlow = min(fieldGlow, 0.25);
+    color.rgb += fieldColor * I;
+
+    // === 5. 全局色差（液态玻璃的色散效果） ===
+    if (nearTip || lineIntensity > 0.1) {
+        float ca = 0.004 * I;
+        color.r = mix(color.r, cameraTex.sample(s, cameraUV + float2(ca, 0.0)).r, 0.3);
+        color.b = mix(color.b, cameraTex.sample(s, cameraUV - float2(ca, 0.0)).b, 0.3);
+    }
+
+    return color;
+}
+
 fragment float4 portal_fragment(VertexOut in [[stage_in]],
                                 texture2d<float> cameraTex [[texture(0)]],
                                 constant PortalParams &params [[buffer(0)]]) {
@@ -664,7 +885,7 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
     float dist = distance(pos, ctr);
     float I = params.intensity;
 
-    if (I < 0.01) {
+    if (I < 0.005) {
         return cameraTex.sample(s, cameraUV);
     }
 
@@ -679,6 +900,8 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
             return effectLightning(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         case 4:
             return effectBlackHole(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
+        case 5:
+            return effectSpacetimeRealm(uv, cameraUV, pos, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, params, ctr);
         default:
             return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2, params.handRotation, params.twistEnergy);
     }

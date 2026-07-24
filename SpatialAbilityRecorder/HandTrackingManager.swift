@@ -50,14 +50,24 @@ final class HandTrackingManager {
     /// 丢手保持计数器
     private var lostFrameCount: Int = 0
 
-    /// 最大丢手保持帧数（增强：从 10 提升到 20，约 0.6s）
-    private let maxLostFrames: Int = 20
+    /// 最大丢手保持帧数（增强：从 20 提升到 40，约 1.3s，大幅减少特效闪烁）
+    private let maxLostFrames: Int = 40
 
     /// 基础平滑系数（0~1，越大越平滑但延迟越大）
-    private let baseSmoothingFactor: CGFloat = 0.30
+    private let baseSmoothingFactor: CGFloat = 0.25
 
     /// 上一帧每只手的速度（用于速度预测）
     private var lastVelocities: [CGPoint] = []
+
+    // MARK: - 时序持久化（100%识别核心）
+    /// 候选手：尚未确认的检测结果，需连续检测到 minConfirmFrames 帧才确认为有效手
+    private var candidateHands: [HandResult] = []
+    /// 每个候选手的连续检测帧数
+    private var candidateFrameCounts: [Int] = []
+    /// 确认所需的最小连续帧数（降低瞬时误检）
+    private let minConfirmFrames: Int = 2
+    /// 已确认手的连续检测帧数（用于稳定性评估）
+    private var confirmedFrameCounts: [Int] = []
 
     // MARK: - 扭曲能量系统
 
@@ -139,6 +149,10 @@ final class HandTrackingManager {
     // 索引：手1[0-4] 拇指/食指/中指/无名指/小指，手2[5-9] 同上
     private(set) var fingertipPositions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
     private(set) var validFingertipCount: Int = 0
+    /// 指尖平滑后的位置（EMA 平滑，减少抖动）
+    private var smoothedFingertipPositions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+    /// 指尖平滑系数
+    private let fingertipSmoothing: CGFloat = 0.35
 
     private let handPoseRequest: VNDetectHumanHandPoseRequest
     private let lock = NSLock()
@@ -169,20 +183,28 @@ final class HandTrackingManager {
             return
         }
 
-        var results: [HandResult] = []
+        // === 1. 解析并验证每个检测结果 ===
+        // 只接受通过解剖学验证的手（排除非手物体误检）
+        var validatedResults: [(HandResult, VNHumanHandPoseObservation)] = []
 
         for obs in observations {
+            // 解剖学验证：检查关节结构是否符合人手特征
+            guard validateHandAnatomy(obs) else { continue }
+
             let (rawPos, handSize, jointCount, avgJointConf) = computeHandCenterAndSize(obs)
             let gesture = detectGesture(obs)
             let rotation = computeHandRotation(obs)
 
-            // 置信度增强：检测到的关节数越多，置信度越高（拆分避免编译器超时）
+            // 置信度增强：检测到的关节数越多，置信度越高
             let jointBonus = Float(jointCount) / 21.0
-            let baseConf = max(obs.confidence * 2.0, avgJointConf)
+            let baseConf = max(obs.confidence * 2.5, avgJointConf * 1.5)
             let confMultiplier = 0.5 + jointBonus * 0.5
             let enhancedConfidence = min(baseConf * confMultiplier, 1.0)
 
-            results.append(HandResult(
+            // 几何验证：手部大小应在合理范围内
+            guard handSize > 0.03 && handSize < 0.8 else { continue }
+
+            validatedResults.append((HandResult(
                 position: rawPos,
                 rawPosition: rawPos,
                 confidence: enhancedConfidence,
@@ -190,18 +212,112 @@ final class HandTrackingManager {
                 handSize: handSize,
                 rotation: rotation,
                 velocity: .zero
-            ))
+            ), obs))
         }
 
-        // 按置信度排序，取前2只
-        results.sort { $0.confidence > $1.confidence }
-        let topResults = Array(results.prefix(2))
+        // 如果没有通过验证的手，应用丢手保持
+        if validatedResults.isEmpty {
+            applyLostFrame()
+            return
+        }
+
+        // 按置信度排序
+        validatedResults.sort { $0.0.confidence > $1.0.confidence }
+        let topResults = Array(validatedResults.prefix(2))
+
+        // === 2. 时序持久化：连续检测确认 ===
+        // 新检测到的手需要连续 minConfirmFrames 帧才确认为有效
+        var confirmedResults: [HandResult] = []
+        var confirmedObs: [VNHumanHandPoseObservation] = []
+        var newCandidates: [HandResult] = []
+        var newCandidateCounts: [Int] = []
+
+        for (result, obs) in topResults {
+            // 尝试与已确认的手匹配（基于位置 proximity）
+            var matchedConfirmedIdx = -1
+            if !hands.isEmpty {
+                var bestDist: CGFloat = .infinity
+                for (i, prev) in hands.enumerated() {
+                    let dx = result.position.x - prev.position.x
+                    let dy = result.position.y - prev.position.y
+                    let d = sqrt(dx * dx + dy * dy)
+                    if d < bestDist && d < 0.3 {
+                        bestDist = d
+                        matchedConfirmedIdx = i
+                    }
+                }
+            }
+
+            if matchedConfirmedIdx >= 0 {
+                // 匹配到已确认的手，直接使用
+                confirmedResults.append(result)
+                confirmedObs.append(obs)
+                if matchedConfirmedIdx < confirmedFrameCounts.count {
+                    confirmedFrameCounts[matchedConfirmedIdx] += 1
+                }
+            } else {
+                // 尝试与候选手匹配
+                var matchedCandidateIdx = -1
+                var bestCDist: CGFloat = .infinity
+                for (i, cand) in candidateHands.enumerated() {
+                    let dx = result.position.x - cand.position.x
+                    let dy = result.position.y - cand.position.y
+                    let d = sqrt(dx * dx + dy * dy)
+                    if d < bestCDist && d < 0.3 {
+                        bestCDist = d
+                        matchedCandidateIdx = i
+                    }
+                }
+
+                if matchedCandidateIdx >= 0 {
+                    let count = candidateFrameCounts[matchedCandidateIdx] + 1
+                    if count >= minConfirmFrames {
+                        // 达到确认阈值，升级为已确认
+                        confirmedResults.append(result)
+                        confirmedObs.append(obs)
+                    } else {
+                        newCandidates.append(result)
+                        newCandidateCounts.append(count)
+                    }
+                } else {
+                    // 新候选手
+                    newCandidates.append(result)
+                    newCandidateCounts.append(1)
+                }
+            }
+        }
+
+        // 更新候选手列表
+        candidateHands = newCandidates
+        candidateFrameCounts = newCandidateCounts
+
+        // 如果没有确认的手，但有候选手，使用候选手（降低阈值以避免特效消失）
+        var finalResults: [HandResult] = confirmedResults
+        var finalObs: [VNHumanHandPoseObservation] = confirmedObs
+
+        if finalResults.isEmpty && !candidateHands.isEmpty {
+            // 使用候选手，但降低置信度
+            for (i, cand) in candidateHands.enumerated() {
+                var h = cand
+                h.confidence *= Float(candidateFrameCounts[i]) / Float(minConfirmFrames)
+                finalResults.append(h)
+            }
+            // 重新提取指尖（使用候选观测结果）
+            if let topObs = validatedResults.first?.1 {
+                finalObs = [topObs]
+            }
+        }
+
+        if finalResults.isEmpty {
+            applyLostFrame()
+            return
+        }
 
         // 帧间匹配 + 自适应平滑 + 速度预测
-        let smoothedResults = smoothHandsAdaptive(topResults)
+        let smoothedResults = smoothHandsAdaptive(finalResults)
 
-        // 提取指尖位置（用于特效2：指尖能量网）
-        extractFingertips(observations)
+        // 提取并平滑指尖位置
+        extractFingertips(finalObs)
 
         // 更新扭曲能量系统
         updateTwistEnergy(smoothedResults)
@@ -210,6 +326,71 @@ final class HandTrackingManager {
         lostFrameCount = 0
         lastHands = smoothedResults
         hands = smoothedResults
+    }
+
+    // MARK: - 解剖学验证（100%只识别手的核心）
+
+    /// 验证检测结果是否符合人手解剖学结构
+    /// 通过检查关节拓扑、距离比例和空间分布来排除非手物体的误检
+    private func validateHandAnatomy(_ obs: VNHumanHandPoseObservation) -> Bool {
+        guard let allPoints = try? obs.recognizedPoints(.all) else { return false }
+
+        // 1. 手腕必须检测到（手的锚点）
+        guard let wrist = allPoints[.wrist], wrist.confidence > 0.05 else { return false }
+
+        // 2. 至少检测到 3 个指尖（确保是手而非其他物体）
+        let tips: [VNHumanHandPoseObservation.JointName] = [
+            .thumbTip, .indexTip, .middleTip, .ringTip, .littleTip
+        ]
+        var tipCount = 0
+        var tipPositions: [CGPoint] = []
+        for tip in tips {
+            if let p = allPoints[tip], p.confidence > 0.05 {
+                tipCount += 1
+                tipPositions.append(p.location)
+            }
+        }
+        if tipCount < 3 { return false }
+
+        // 3. 几何约束：所有指尖到手腕的距离应在合理范围内
+        let wristPos = wrist.location
+        var wristToTipDistances: [CGFloat] = []
+        for tipPos in tipPositions {
+            let dx = tipPos.x - wristPos.x
+            let dy = tipPos.y - wristPos.y
+            let d = sqrt(dx * dx + dy * dy)
+            wristToTipDistances.append(d)
+        }
+
+        // 手指长度应在 0.05~0.4 归一化范围内
+        for d in wristToTipDistances {
+            if d < 0.03 || d > 0.5 { return false }
+        }
+
+        // 4. 指尖间距应大于最小值（指尖不应完全重叠）
+        for i in 0..<tipPositions.count {
+            for j in (i+1)..<tipPositions.count {
+                let dx = tipPositions[i].x - tipPositions[j].x
+                let dy = tipPositions[i].y - tipPositions[j].y
+                let d = sqrt(dx * dx + dy * dy)
+                if d < 0.005 { return false } // 指尖完全重叠 = 误检
+            }
+        }
+
+        // 5. 指尖应分布在手腕的同一侧（手而非随机点集）
+        // 计算指尖质心相对于手腕的方向
+        var centroidX: CGFloat = 0
+        var centroidY: CGFloat = 0
+        for p in tipPositions {
+            centroidX += p.x
+            centroidY += p.y
+        }
+        centroidX /= CGFloat(tipPositions.count)
+        centroidY /= CGFloat(tipPositions.count)
+        let centroidDist = sqrt(pow(centroidX - wristPos.x, 2) + pow(centroidY - wristPos.y, 2))
+        if centroidDist < 0.04 { return false } // 指尖质心太接近手腕 = 非手
+
+        return true
     }
 
     // MARK: - 扭曲能量系统
@@ -246,10 +427,10 @@ final class HandTrackingManager {
 
     // MARK: - 指尖提取
 
-    /// 从 Vision 观测结果中提取 10 个指尖位置
+    /// 从 Vision 观测结果中提取 10 个指尖位置并平滑
     /// 索引：手1[0-4]=拇指/食指/中指/无名指/小指，手2[5-9]=同上
     private func extractFingertips(_ observations: [VNHumanHandPoseObservation]) {
-        var positions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+        var rawPositions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
         var count = 0
 
         let fingertipJoints: [VNHumanHandPoseObservation.JointName] = [
@@ -263,13 +444,35 @@ final class HandTrackingManager {
                 let tipIdx = handIdx * 5 + fingerIdx
                 if let point = allPoints[joint], point.confidence > 0 {
                     // Vision: 左下角原点 y向上 → 视图: 左上角原点 y向下
-                    positions[tipIdx] = CGPoint(x: point.location.x, y: 1.0 - point.location.y)
+                    rawPositions[tipIdx] = CGPoint(x: point.location.x, y: 1.0 - point.location.y)
                     count += 1
                 }
             }
         }
 
-        fingertipPositions = positions
+        // EMA 平滑：如果之前有有效位置且当前也有，进行插值平滑
+        var smoothedPositions: [CGPoint] = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+        for i in 0..<10 {
+            let raw = rawPositions[i]
+            let prev = smoothedFingertipPositions[i]
+
+            if raw.x >= 0 && prev.x >= 0 {
+                // 当前和上一帧都有效：EMA 平滑
+                smoothedPositions[i] = CGPoint(
+                    x: prev.x * (1 - fingertipSmoothing) + raw.x * fingertipSmoothing,
+                    y: prev.y * (1 - fingertipSmoothing) + raw.y * fingertipSmoothing
+                )
+            } else if raw.x >= 0 {
+                // 当前有效，上一帧无效：直接使用
+                smoothedPositions[i] = raw
+            } else {
+                // 当前无效：保持上一帧位置（短暂保持，由 validFingertipCount 控制可见性）
+                smoothedPositions[i] = prev
+            }
+        }
+
+        smoothedFingertipPositions = smoothedPositions
+        fingertipPositions = smoothedPositions
         validFingertipCount = count
     }
 
@@ -565,6 +768,10 @@ final class HandTrackingManager {
         lastPrimaryPosition = nil
         lastPrimaryRotation = 0
         fingertipPositions = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
+        smoothedFingertipPositions = Array(repeating: CGPoint(x: -1, y: -1), count: 10)
         validFingertipCount = 0
+        candidateHands = []
+        candidateFrameCounts = []
+        confirmedFrameCounts = []
     }
 }

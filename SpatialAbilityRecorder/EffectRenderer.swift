@@ -67,7 +67,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
     var hasHand2: Bool = false                           // 是否检测到第二只手
     var confidence: Float = 0
     var latestFrameTime: CMTime = .invalid
-    var effectType: Int32 = 0   // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞
+    var effectType: Int32 = 0   // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境
     var isFrontCamera: Bool = false  // 当前是否使用前置摄像头
     var effectRadius: Float = 0.18  // 动态特效半径（由 HandTrackingManager 计算）
     var handRotation: Float = 0  // 累积扭曲角度（弧度）
@@ -200,7 +200,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
                 time: animTime,
                 aspect: Float(renderWidth) / Float(renderHeight),  // 720/1280 ≈ 0.5625
                 radius: effectRadius,
-                intensity: confidence > 0.03 ? confidence : 0.0,
+                intensity: confidence > 0.01 ? confidence : 0.0,
                 effectType: effectType,
                 isFrontCamera: isFrontCamera ? 1 : 0,
                 handRotation: handRotation,
