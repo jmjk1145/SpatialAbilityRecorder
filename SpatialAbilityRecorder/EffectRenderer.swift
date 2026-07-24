@@ -186,7 +186,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
                 time: animTime,
                 aspect: Float(renderWidth) / Float(renderHeight),  // 720/1280 ≈ 0.5625
                 radius: effectRadius,
-                intensity: confidence > 0.15 ? confidence : 0.0,
+                intensity: confidence > 0.03 ? confidence : 0.0,
                 effectType: effectType,
                 isFrontCamera: isFrontCamera ? 1 : 0,
                 handRotation: handRotation,
