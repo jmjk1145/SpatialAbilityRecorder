@@ -157,7 +157,7 @@ float4 effectPortal(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
     float spiralAngle = baseAngle + handRotation * 1.5 + time * 1.2;
     float spiralDist = r / max(radius, 0.001);
     float spiralPattern = sin(spiralAngle * 3.0 - spiralDist * 12.0 + time * 3.0);
-    float spiralMask = smoothstep(radius * 1.5, 0.0, r) * smoothstep(voidRadius, r);
+    float spiralMask = smoothstep(radius * 1.5, 0.0, r) * step(voidRadius, r);
     color.rgb += energyCyan * max(spiralPattern, 0.0) * spiralMask * 0.4 * I;
 
     float spiral2 = sin(-spiralAngle * 5.0 + spiralDist * 20.0 - time * 2.0);
