@@ -38,8 +38,9 @@ struct ContentView: View {
                     .allowsHitTesting(false)
                 }
 
-                // 顶部状态栏
+                // 顶部状态栏 + 特效选择器
                 VStack {
+                    // 状态消息
                     HStack {
                         Spacer()
                         VStack(spacing: 4) {
@@ -58,6 +59,46 @@ struct ContentView: View {
                         .padding(.top, 8)
                         Spacer()
                     }
+
+                    // 特效选择器
+                    HStack(spacing: 12) {
+                        // 上一个特效
+                        Button {
+                            appModel.switchEffectPrevious()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+
+                        // 当前特效名称
+                        HStack(spacing: 6) {
+                            Image(systemName: appModel.effectIcons[appModel.currentEffectIndex])
+                                .font(.system(size: 14))
+                                .foregroundColor(.cyan)
+                            Text(appModel.effectNames[appModel.currentEffectIndex])
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+
+                        // 下一个特效
+                        Button {
+                            appModel.switchEffect()
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                    }
+                    .padding(.top, 6)
+
                     Spacer()
                 }
                 .ignoresSafeArea()
@@ -65,7 +106,18 @@ struct ContentView: View {
                 // 底部控制栏
                 VStack {
                     Spacer()
-                    HStack(spacing: 48) {
+                    HStack(spacing: 44) {
+                        // 摄像头切换
+                        Button {
+                            appModel.switchCamera()
+                        } label: {
+                            Image(systemName: appModel.isUsingFrontCamera ? "camera.metering.matrix" : "camera.aperture")
+                                .font(.title2)
+                                .foregroundColor(.white)
+                                .frame(width: 56, height: 56)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+
                         // 重置追踪
                         Button {
                             appModel.resetTracking()
@@ -96,13 +148,6 @@ struct ContentView: View {
                                 }
                             }
                         }
-
-                        // 保存指示
-                        Image(systemName: "sparkles")
-                            .font(.title2)
-                            .foregroundColor(.cyan)
-                            .frame(width: 56, height: 56)
-                            .background(.ultraThinMaterial, in: Circle())
                     }
                     .padding(.bottom, 40)
                 }

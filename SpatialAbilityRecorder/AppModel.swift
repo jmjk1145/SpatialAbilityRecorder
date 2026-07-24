@@ -16,6 +16,14 @@ final class AppModel: ObservableObject {
     @Published var statusMessage = "点击屏幕选择空间锚点"
     @Published var hasTrackedPoint = false
 
+    // 特效管理
+    @Published var currentEffectIndex: Int = 0
+    @Published var isUsingFrontCamera = false
+
+    /// 特效名称列表（与 shader 中 effectType 对应）
+    let effectNames: [String] = ["空间传送门", "能量护盾", "烈焰能量", "闪电链", "黑洞引力"]
+    let effectIcons: [String] = ["circle.hexagongrid.fill", "shield.lefthalf.filled", "flame.fill", "bolt.fill", "circle.dashed"]
+
     init() {
         bindPipeline()
     }
@@ -50,6 +58,14 @@ final class AppModel: ObservableObject {
             }
         }
 
+        // 摄像头切换回调
+        cameraManager.onCameraSwitched = { [weak self] isFront in
+            DispatchQueue.main.async {
+                self?.isUsingFrontCamera = isFront
+                self?.statusMessage = isFront ? "已切换至前置摄像头" : "已切换至后置摄像头"
+            }
+        }
+
         // 渲染器完成一帧后 → 录制
         renderer.recordingCallback = { [weak self] pixelBuffer, time in
             guard let self = self, self.isRecording else { return }
@@ -81,6 +97,33 @@ final class AppModel: ObservableObject {
             self.isTrackingActive = false
             self.trackedConfidence = 0
             self.statusMessage = "点击屏幕选择空间锚点"
+        }
+    }
+
+    /// 切换前后摄像头
+    func switchCamera() {
+        // 切换摄像头时重置追踪（坐标空间变化）
+        resetTracking()
+        cameraManager.switchCamera()
+    }
+
+    /// 切换到下一个特效（循环）
+    func switchEffect() {
+        let next = (currentEffectIndex + 1) % effectNames.count
+        currentEffectIndex = next
+        renderer.effectType = Int32(next)
+        DispatchQueue.main.async {
+            self.statusMessage = "特效：\(self.effectNames[next])"
+        }
+    }
+
+    /// 切换到上一个特效（循环）
+    func switchEffectPrevious() {
+        let prev = (currentEffectIndex - 1 + effectNames.count) % effectNames.count
+        currentEffectIndex = prev
+        renderer.effectType = Int32(prev)
+        DispatchQueue.main.async {
+            self.statusMessage = "特效：\(self.effectNames[prev])"
         }
     }
 

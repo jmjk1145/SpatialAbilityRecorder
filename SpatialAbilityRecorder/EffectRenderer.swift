@@ -3,7 +3,7 @@ import CoreVideo
 import CoreMedia
 import AVFoundation
 
-/// 与 Metal 着色器中 PortalParams 结构体完全对应的 Swift 端定义（逐字段 float，保证内存布局一致）。
+/// 与 Metal 着色器中 PortalParams 结构体完全对应的 Swift 端定义（逐字段对应，保证内存布局一致）。
 struct PortalParams {
     var centerX: Float
     var centerY: Float
@@ -11,6 +11,7 @@ struct PortalParams {
     var aspect: Float
     var radius: Float
     var intensity: Float
+    var effectType: Int32   // 0传送门 1护盾 2烈焰 3闪电 4黑洞
     var _pad0: Float = 0
     var _pad1: Float = 0
     var _pad2: Float = 0
@@ -48,6 +49,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
     var trackedPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
     var confidence: Float = 0
     var latestFrameTime: CMTime = .invalid
+    var effectType: Int32 = 0   // 0传送门 1护盾 2烈焰 3闪电 4黑洞
 
     /// 渲染完成回调，返回可用于录制的 CVPixelBuffer 及其时间戳
     var recordingCallback: ((CVPixelBuffer, CMTime) -> Void)?
@@ -145,7 +147,8 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
                 time: animTime,
                 aspect: Float(width) / Float(height),
                 radius: 0.18,
-                intensity: confidence > 0.3 ? confidence : 0.0
+                intensity: confidence > 0.3 ? confidence : 0.0,
+                effectType: effectType
             )
             if !hasActiveTracking {
                 // 未追踪时不显示特效（intensity = 0）

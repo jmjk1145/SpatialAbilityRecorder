@@ -1,21 +1,30 @@
 import AVFoundation
 import UIKit
 
-/// 相机管理：配置 AVCaptureSession，逐帧交付视频像素缓冲。
+/// 相机管理：配置 AVCaptureSession，逐帧交付视频像素缓冲，支持前后摄像头切换。
 final class CameraManager: NSObject {
 
     /// 每收到一帧时回调（sampleBuffer + 解出的 CVPixelBuffer）
     var onFrame: ((CMSampleBuffer, CVPixelBuffer) -> Void)?
+
+    /// 摄像头切换完成回调（通知 UI 当前是否使用前置摄像头）
+    var onCameraSwitched: ((Bool) -> Void)?
 
     private let session = AVCaptureSession()
     private let videoOutput = AVCaptureVideoDataOutput()
     private let sessionQueue = DispatchQueue(label: "com.spatialability.camera", qos: .userInitiated)
     private var isConfigured = false
 
+    /// 当前摄像头位置（后置/前置）
+    private(set) var currentPosition: AVCaptureDevice.Position = .back
+
     var captureSession: AVCaptureSession { session }
 
     // 输出尺寸（由实际 videoFormat 决定，默认 720p）
-    private(set) var outputSize: CGSize = CGSize(width: 1280, height: 720)
+    private(set) var outputSize: CGSize = CGSize(width: 720, height: 1280)
+
+    /// 当前是否使用前置摄像头
+    var isUsingFrontCamera: Bool { currentPosition == .front }
 
     func startSession() {
         sessionQueue.async { [weak self] in
@@ -32,6 +41,65 @@ final class CameraManager: NSObject {
     func stopSession() {
         sessionQueue.async { [weak self] in
             self?.session.stopRunning()
+        }
+    }
+
+    /// 切换前后摄像头
+    func switchCamera() {
+        sessionQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            self.session.beginConfiguration()
+
+            // 移除现有视频输入
+            if let existingInput = self.session.inputs.first(where: { $0 is AVCaptureDeviceInput }) as? AVCaptureDeviceInput {
+                self.session.removeInput(existingInput)
+            }
+
+            // 确定新摄像头位置
+            let newPosition: AVCaptureDevice.Position = self.currentPosition == .back ? .front : .back
+
+            // 尝试添加新摄像头
+            guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: newPosition)
+                ?? AVCaptureDevice.default(for: .video) else {
+                self.session.commitConfiguration()
+                return
+            }
+
+            do {
+                let input = try AVCaptureDeviceInput(device: camera)
+                if self.session.canAddInput(input) {
+                    self.session.addInput(input)
+                    self.currentPosition = newPosition
+                } else {
+                    // 添加失败，尝试恢复原有输入
+                    self.session.commitConfiguration()
+                    return
+                }
+            } catch {
+                self.session.commitConfiguration()
+                return
+            }
+
+            // 更新视频连接的方向和镜像
+            if let conn = self.videoOutput.connection(with: .video) {
+                if conn.isVideoOrientationSupported {
+                    conn.videoOrientation = .portrait
+                }
+                if conn.isVideoMirroringSupported {
+                    conn.automaticallyAdjustsVideoMirroring = false
+                    // 前置摄像头镜像（符合自拍预期），后置不镜像
+                    conn.isVideoMirrored = (newPosition == .front)
+                }
+            }
+
+            self.session.commitConfiguration()
+
+            // 通知 UI
+            let isFront = (newPosition == .front)
+            DispatchQueue.main.async {
+                self.onCameraSwitched?(isFront)
+            }
         }
     }
 
@@ -54,6 +122,7 @@ final class CameraManager: NSObject {
             let input = try AVCaptureDeviceInput(device: camera)
             if session.canAddInput(input) {
                 session.addInput(input)
+                currentPosition = .back
             }
         } catch {
             session.commitConfiguration()
@@ -77,6 +146,7 @@ final class CameraManager: NSObject {
             }
             if conn.isVideoMirroringSupported {
                 conn.automaticallyAdjustsVideoMirroring = false
+                // 后置摄像头不镜像
                 conn.isVideoMirrored = false
             }
         }
