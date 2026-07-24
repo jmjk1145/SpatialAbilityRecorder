@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
             DispatchQueue.main.async {
                 self.trackedPoint = point
                 self.trackedConfidence = conf
-                if conf < 0.3 && self.isTrackingActive {
+                if conf < 0.15 && self.isTrackingActive {
                     self.isTrackingActive = false
                     self.renderer.setTrackingActive(false)
                     self.statusMessage = "追踪丢失，请重新点击锚点"

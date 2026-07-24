@@ -37,6 +37,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
 
     private var portalPipeline: MTLRenderPipelineState!
     private var blitPipeline: MTLRenderPipelineState!
+    private var blitFlippedPipeline: MTLRenderPipelineState!
     private var textureCache: CVMetalTextureCache!
 
     // 离屏渲染目标池
@@ -87,12 +88,19 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
         portalDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
         portalPipeline = try? device.makeRenderPipelineState(descriptor: portalDesc)
 
-        // 纹理拷贝管线
+        // 纹理拷贝管线（预览：正常方向）
         let blitDesc = MTLRenderPipelineDescriptor()
         blitDesc.vertexFunction = vertexFunc
         blitDesc.fragmentFunction = library.makeFunction(name: "blit_fragment")
         blitDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
         blitPipeline = try? device.makeRenderPipelineState(descriptor: blitDesc)
+
+        // Y 翻转纹理拷贝管线（录制：Metal 底左原点 → 视频顶左原点）
+        let blitFlippedDesc = MTLRenderPipelineDescriptor()
+        blitFlippedDesc.vertexFunction = vertexFunc
+        blitFlippedDesc.fragmentFunction = library.makeFunction(name: "blit_flipped_fragment")
+        blitFlippedDesc.colorAttachments[0].pixelFormat = .bgra8Unorm
+        blitFlippedPipeline = try? device.makeRenderPipelineState(descriptor: blitFlippedDesc)
     }
 
     // MARK: - MTKViewDelegate
@@ -131,6 +139,17 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
         let time = latestFrameTime
         let animTime = Float(CACurrentMediaTime())
 
+        // 是否需要录制：预分配录制缓冲并创建 Y 翻转纹理
+        let needsRecording = recordingCallback != nil
+        var recordingBuffer: CVPixelBuffer? = nil
+        var recordingTexRef: TextureRef? = nil
+        if needsRecording {
+            recordingBuffer = dequeueOffscreenBuffer()
+            if let rb = recordingBuffer {
+                recordingTexRef = makeTextureRef(from: rb, width: width, height: height)
+            }
+        }
+
         // ---- 1. 渲染传送门特效到离屏纹理 ----
         let portalPass = MTLRenderPassDescriptor()
         portalPass.colorAttachments[0].texture = offscreenTexture
@@ -147,7 +166,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
                 time: animTime,
                 aspect: Float(width) / Float(height),
                 radius: 0.18,
-                intensity: confidence > 0.3 ? confidence : 0.0,
+                intensity: confidence > 0.15 ? confidence : 0.0,
                 effectType: effectType
             )
             if !hasActiveTracking {
@@ -159,7 +178,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             encoder.endEncoding()
         }
 
-        // ---- 2. 将离屏纹理拷贝到 drawable ----
+        // ---- 2. 将离屏纹理拷贝到 drawable（预览，正常方向） ----
         let blitPass = MTLRenderPassDescriptor()
         blitPass.colorAttachments[0].texture = drawable.texture
         blitPass.colorAttachments[0].loadAction = .dontCare
@@ -172,17 +191,38 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             encoder.endEncoding()
         }
 
+        // ---- 3. 将离屏纹理 Y 翻转拷贝到录制缓冲（视频文件期望顶左原点） ----
+        if let recTex = recordingTexRef?.texture,
+           let recBuffer = recordingBuffer,
+           blitFlippedPipeline != nil {
+            let recPass = MTLRenderPassDescriptor()
+            recPass.colorAttachments[0].texture = recTex
+            recPass.colorAttachments[0].loadAction = .dontCare
+            recPass.colorAttachments[0].storeAction = .store
+
+            if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: recPass) {
+                encoder.setRenderPipelineState(blitFlippedPipeline)
+                encoder.setFragmentTexture(offscreenTexture, index: 0)
+                encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+                encoder.endEncoding()
+            }
+        }
+
         // 保留 TextureRef（内含 CVMetalTexture）直到命令缓冲完成，防止纹理过早失效
-        let retainedRefs = [cameraTexRef, offscreenTexRef]
+        var retainedRefs = [cameraTexRef, offscreenTexRef]
+        if let recRef = recordingTexRef {
+            retainedRefs.append(recRef)
+        }
         commandBuffer.addCompletedHandler { [weak self] _ in
             _ = retainedRefs // 防止 CVMetalTexture 过早释放
             guard let self = self else { return }
-            // 仅录制新帧
+            // 仅录制新帧，使用 Y 翻转后的录制缓冲
             if self.recordingCallback != nil,
                time != self.lastRecordedTime,
-               time.isValid {
+               time.isValid,
+               let recBuffer = recordingBuffer {
                 self.lastRecordedTime = time
-                self.recordingCallback?(offscreenBuffer, time)
+                self.recordingCallback?(recBuffer, time)
             }
         }
 
@@ -231,7 +271,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             kCVPixelBufferMetalCompatibilityKey as String: true
         ]
         let poolAttrs: [String: Any] = [
-            kCVPixelBufferPoolMinimumBufferCountKey as String: 3
+            kCVPixelBufferPoolMinimumBufferCountKey as String: 4
         ]
         var newPool: CVPixelBufferPool?
         CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs as CFDictionary, bufferAttrs as CFDictionary, &newPool)

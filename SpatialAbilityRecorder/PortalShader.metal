@@ -428,3 +428,12 @@ fragment float4 blit_fragment(VertexOut in [[stage_in]],
     constexpr sampler s(filter::linear, address::clamp_to_edge);
     return tex.sample(s, in.uv);
 }
+
+// MARK: - Y 翻转纹理拷贝（用于录制：Metal 底左原点 → 视频顶左原点）
+
+fragment float4 blit_flipped_fragment(VertexOut in [[stage_in]],
+                                      texture2d<float> tex [[texture(0)]]) {
+    constexpr sampler s(filter::linear, address::clamp_to_edge);
+    // 翻转 V 坐标：Metal 渲染目标原点在左下，视频文件期望左上
+    return tex.sample(s, float2(in.uv.x, 1.0 - in.uv.y));
+}

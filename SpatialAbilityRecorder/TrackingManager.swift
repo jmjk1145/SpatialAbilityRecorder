@@ -8,10 +8,11 @@ import CoreImage
 /// 每一帧用上一帧的观测结果更新请求，得到新的边界框，取其中心作为追踪点。
 final class TrackingManager {
 
-    /// 追踪结果回调（归一化坐标 + 置信度）
+    /// 追踪结果回调（视图归一化坐标 + 置信度）
     var onTrackUpdate: ((CGPoint, Float) -> Void)?
 
-    /// 最近一次追踪到的归一化点（Vision 坐标系：左下角原点，y 向上）
+    /// 最近一次追踪到的归一化点（视图坐标系：左上角原点，y 向下）
+    /// 此值与 shader 中 centerY 的期望一致（0=顶部, 1=底部）
     private(set) var lastTrackedPointNormalized: CGPoint = CGPoint(x: 0.5, y: 0.5)
 
     /// 最近一次追踪置信度
@@ -22,12 +23,17 @@ final class TrackingManager {
     private var isTracking = false
     private let visionQueue = DispatchQueue(label: "com.spatialability.vision", qos: .userInitiated)
 
-    /// 锚点框的归一化半边长（点击后生成的初始检测框大小）
-    private let anchorHalfSize: CGFloat = 0.08
+    /// 线程安全锁：startTracking 在主线程调用，update 在相机队列调用
+    private let lock = NSLock()
 
-    /// 启动追踪：用户点击点（视图坐标系，左上角原点）转为 Vision 归一化坐标
+    /// 锚点框的归一化半边长（点击后生成的初始检测框大小）
+    private let anchorHalfSize: CGFloat = 0.12
+
+    /// 启动追踪：用户点击点（视图坐标系，左上角原点）
     func startTracking(at viewNormalizedPoint: CGPoint) {
-        // viewNormalizedPoint: x,y ∈ [0,1]，原点在左上角
+        lock.lock()
+        defer { lock.unlock() }
+
         // Vision 坐标系原点在左下角，y 向上 → 翻转 y
         let visionPoint = CGPoint(x: viewNormalizedPoint.x, y: 1.0 - viewNormalizedPoint.y)
 
@@ -42,13 +48,17 @@ final class TrackingManager {
         trackingRequest?.trackingLevel = .accurate
         isTracking = true
 
-        lastTrackedPointNormalized = visionPoint
+        // 统一存储视图坐标（与 update 一致，与 shader 期望一致）
+        lastTrackedPointNormalized = viewNormalizedPoint
         lastConfidence = 1.0
         onTrackUpdate?(viewNormalizedPoint, 1.0)
     }
 
     /// 每帧调用：用新图像更新追踪
     func update(with pixelBuffer: CVPixelBuffer, time: CMTime) {
+        lock.lock()
+        defer { lock.unlock() }
+
         guard isTracking, let request = trackingRequest else { return }
 
         // 复用上一帧观测结果
@@ -70,22 +80,25 @@ final class TrackingManager {
         let confidence = result.confidence
         lastConfidence = confidence
 
-        // 取边界框中心
+        // 取边界框中心（Vision 坐标：左下角原点）
         let center = CGPoint(x: result.boundingBox.midX,
                              y: result.boundingBox.midY)
 
-        // Vision 坐标 → 视图坐标（翻转 y）
+        // Vision 坐标 → 视图坐标（翻转 y，使 0=顶部, 1=底部）
         let viewPoint = CGPoint(x: center.x, y: 1.0 - center.y)
         lastTrackedPointNormalized = viewPoint
         onTrackUpdate?(viewPoint, confidence)
 
         // 置信度过低则停止
-        if confidence < 0.2 {
+        if confidence < 0.15 {
             isTracking = false
         }
     }
 
     func stopTracking() {
+        lock.lock()
+        defer { lock.unlock() }
+
         isTracking = false
         trackingRequest = nil
         lastObservation = nil
