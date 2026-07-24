@@ -14,7 +14,7 @@ struct PortalParams {
     var aspect: Float
     var radius: Float
     var intensity: Float
-    var effectType: Int32     // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境 6烈焰
+    var effectType: Int32     // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境 6烈焰 7空间异能
     var isFrontCamera: Int32  // 0后置 1前置
     var handRotation: Float   // 累积扭曲角度（弧度）
     var twistEnergy: Float    // 扭曲能量（0~1）
@@ -67,7 +67,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
     var hasHand2: Bool = false                           // 是否检测到第二只手
     var confidence: Float = 0
     var latestFrameTime: CMTime = .invalid
-    var effectType: Int32 = 0   // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境 6烈焰
+    var effectType: Int32 = 7   // 0空间裂缝 1护盾 2指尖能量网 3闪电 4黑洞 5时空之境 6烈焰 7空间异能
     var isFrontCamera: Bool = false  // 当前是否使用前置摄像头
     var effectRadius: Float = 0.18  // 动态特效半径（由 HandTrackingManager 计算）
     var handRotation: Float = 0  // 累积扭曲角度（弧度）

@@ -24,15 +24,16 @@ final class AppModel: ObservableObject {
     @Published var currentGestureIcon: String = ""  // 当前手势图标
 
     // 特效管理
-    @Published var currentEffectIndex: Int = 0
+    @Published var currentEffectIndex: Int = 7
     @Published var isUsingFrontCamera = false
 
     /// 特效名称列表（与 shader 中 effectType 对应）
-    let effectNames: [String] = ["空间裂缝", "能量护盾", "指尖能量网", "闪电链", "黑洞引力", "时空之境", "烈焰能量"]
-    let effectIcons: [String] = ["bolt.fill", "shield.lefthalf.filled", "hand.point.up.braille.fill", "bolt.slash.fill", "circle.dashed", "circle.hexagongrid.fill", "flame.fill"]
+    let effectNames: [String] = ["空间裂缝", "能量护盾", "指尖能量网", "闪电链", "黑洞引力", "时空之境", "烈焰能量", "空间异能"]
+    let effectIcons: [String] = ["bolt.fill", "shield.lefthalf.filled", "hand.point.up.braille.fill", "bolt.slash.fill", "circle.dashed", "circle.hexagongrid.fill", "flame.fill", "wand.and.stars"]
 
     init() {
         bindPipeline()
+        renderer.effectType = Int32(currentEffectIndex)
     }
 
     /// 组装数据流：相机帧 → 手部追踪 → 渲染器属性 → MTKView 驱动绘制 → 录制

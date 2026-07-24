@@ -69,6 +69,18 @@ final class HandTrackingManager {
     /// 已确认手的连续检测帧数（用于稳定性评估）
     private var confirmedFrameCounts: [Int] = []
 
+    // MARK: - 手数滞后（防止在1只手和2只手之间快速跳变）
+    /// 第二只手连续被检测到的帧数
+    private var secondHandSeenCount: Int = 0
+    /// 第二只手连续丢失的帧数
+    private var secondHandLostCount: Int = 0
+    /// 第二只手是否处于激活状态（显示中）
+    private var secondHandActive: Bool = false
+    /// 激活第二只手所需连续检测帧数（防止偶发误检导致跳变）
+    private let secondHandActivateThreshold: Int = 2
+    /// 取消第二只手所需连续丢失帧数（保持稳定，防止短暂遮挡导致跳变）
+    private let secondHandDeactivateThreshold: Int = 5
+
     // MARK: - 扭曲能量系统
 
     /// 累积扭曲角度（弧度）：每帧旋转变化+移动贡献不断累积，形成连续漩涡旋转
@@ -197,12 +209,12 @@ final class HandTrackingManager {
 
             // 置信度增强：检测到的关节数越多，置信度越高
             let jointBonus = Float(jointCount) / 21.0
-            let baseConf = max(obs.confidence * 2.5, avgJointConf * 1.5)
+            let baseConf = max(obs.confidence * 3.0, avgJointConf * 2.0)
             let confMultiplier = 0.5 + jointBonus * 0.5
             let enhancedConfidence = min(baseConf * confMultiplier, 1.0)
 
-            // 几何验证：手部大小应在合理范围内
-            guard handSize > 0.03 && handSize < 0.8 else { continue }
+            // 几何验证：手部大小应在合理范围内（放宽范围提升识别率）
+            guard handSize > 0.02 && handSize < 0.9 else { continue }
 
             validatedResults.append((HandResult(
                 position: rawPos,
@@ -233,7 +245,7 @@ final class HandTrackingManager {
         var newCandidateCounts: [Int] = []
 
         for (result, obs) in topResults {
-            // 尝试与已确认的手匹配（基于位置 proximity）
+            // 尝试与已确认的手匹配（基于位置 proximity，阈值放宽至0.35提升匹配率）
             var matchedConfirmedIdx = -1
             if !hands.isEmpty {
                 var bestDist: CGFloat = .infinity
@@ -241,7 +253,7 @@ final class HandTrackingManager {
                     let dx = result.position.x - prev.position.x
                     let dy = result.position.y - prev.position.y
                     let d = sqrt(dx * dx + dy * dy)
-                    if d < bestDist && d < 0.3 {
+                    if d < bestDist && d < 0.35 {
                         bestDist = d
                         matchedConfirmedIdx = i
                     }
@@ -263,7 +275,7 @@ final class HandTrackingManager {
                     let dx = result.position.x - cand.position.x
                     let dy = result.position.y - cand.position.y
                     let d = sqrt(dx * dx + dy * dy)
-                    if d < bestCDist && d < 0.3 {
+                    if d < bestCDist && d < 0.35 {
                         bestCDist = d
                         matchedCandidateIdx = i
                     }
@@ -322,10 +334,45 @@ final class HandTrackingManager {
         // 更新扭曲能量系统
         updateTwistEnergy(smoothedResults)
 
+        // === 手数滞后：防止在1只手和2只手之间快速跳变 ===
+        var finalHands = smoothedResults
+        let detectedCount = smoothedResults.count
+
+        if detectedCount >= 2 {
+            // 检测到2只手
+            secondHandLostCount = 0
+            if !secondHandActive {
+                secondHandSeenCount += 1
+                if secondHandSeenCount >= secondHandActivateThreshold {
+                    secondHandActive = true
+                } else {
+                    // 尚未达到激活阈值，只保留第一只手
+                    finalHands = Array(smoothedResults.prefix(1))
+                }
+            }
+        } else {
+            // 只检测到1只手（或0只）
+            secondHandSeenCount = 0
+            if secondHandActive {
+                secondHandLostCount += 1
+                if secondHandLostCount >= secondHandDeactivateThreshold {
+                    secondHandActive = false
+                } else {
+                    // 保持第二只手：从上一帧恢复第二只手位置
+                    if let lastSecond = lastHands.count >= 2 ? lastHands[1] : nil,
+                       finalHands.count >= 1 {
+                        var preservedSecond = lastSecond
+                        preservedSecond.confidence *= (1.0 - Float(secondHandLostCount) / Float(secondHandDeactivateThreshold))
+                        finalHands.append(preservedSecond)
+                    }
+                }
+            }
+        }
+
         // 重置丢手计数
         lostFrameCount = 0
-        lastHands = smoothedResults
-        hands = smoothedResults
+        lastHands = finalHands
+        hands = finalHands
     }
 
     // MARK: - 解剖学验证（100%只识别手的核心）
@@ -338,19 +385,19 @@ final class HandTrackingManager {
         // 1. 手腕必须检测到（手的锚点）
         guard let wrist = allPoints[.wrist], wrist.confidence > 0.05 else { return false }
 
-        // 2. 至少检测到 3 个指尖（确保是手而非其他物体）
+        // 2. 至少检测到 2 个指尖（确保是手而非其他物体，降低阈值提升识别率）
         let tips: [VNHumanHandPoseObservation.JointName] = [
             .thumbTip, .indexTip, .middleTip, .ringTip, .littleTip
         ]
         var tipCount = 0
         var tipPositions: [CGPoint] = []
         for tip in tips {
-            if let p = allPoints[tip], p.confidence > 0.05 {
+            if let p = allPoints[tip], p.confidence > 0.03 {
                 tipCount += 1
                 tipPositions.append(p.location)
             }
         }
-        if tipCount < 3 { return false }
+        if tipCount < 2 { return false }
 
         // 3. 几何约束：所有指尖到手腕的距离应在合理范围内
         let wristPos = wrist.location
@@ -773,5 +820,8 @@ final class HandTrackingManager {
         candidateHands = []
         candidateFrameCounts = []
         confirmedFrameCounts = []
+        secondHandSeenCount = 0
+        secondHandLostCount = 0
+        secondHandActive = false
     }
 }
