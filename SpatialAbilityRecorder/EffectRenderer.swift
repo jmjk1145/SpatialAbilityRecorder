@@ -1,5 +1,7 @@
 import MetalKit
 import CoreVideo
+import CoreMedia
+import AVFoundation
 
 /// 与 Metal 着色器中 PortalParams 结构体完全对应的 Swift 端定义（逐字段 float，保证内存布局一致）。
 struct PortalParams {
@@ -203,9 +205,10 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             textureCache,
             pixelBuffer,
             nil,
-            MTLPixelFormat.bgra8Unorm.rawValue,
+            .bgra8Unorm,
             width,
             height,
+            0,
             &cvTexture
         )
         guard status == kCVReturnSuccess,
@@ -228,7 +231,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             kCVPixelBufferPoolMinimumBufferCountKey as String: 3
         ]
         var newPool: CVPixelBufferPool?
-        CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs, bufferAttrs, &newPool)
+        CVPixelBufferPoolCreate(kCFAllocatorDefault, poolAttrs as CFDictionary, bufferAttrs as CFDictionary, &newPool)
         pixelBufferPool = newPool
         poolWidth = width
         poolHeight = height

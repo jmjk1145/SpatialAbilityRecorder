@@ -84,8 +84,9 @@ final class CameraManager: NSObject {
         session.commitConfiguration()
 
         // 记录实际输出尺寸
-        if let formatDescription = videoOutput.formatDescription {
-            let dimensions = CMVideoFormatDescriptionGetDimensions(formatDescription)
+        if let conn = videoOutput.connection(with: .video),
+           let desc = conn.videoFormatDescription {
+            let dimensions = CMVideoFormatDescriptionGetDimensions(desc)
             // portrait 模式下宽高互换
             outputSize = CGSize(width: CGFloat(dimensions.height), height: CGFloat(dimensions.width))
         }
