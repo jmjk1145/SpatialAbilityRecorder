@@ -11,6 +11,7 @@ import CoreImage
 /// 4. 多关键点融合 —— 使用食指尖 + 中指尖 + 手腕的加权质心，比单点更稳定
 /// 5. 手势感知 —— 检测握拳/张开/捏合手势，可用于智能切换行为
 /// 6. 帧间匹配 —— 按距离最近原则匹配上一帧的手，实现稳定的逐手平滑
+/// 7. 扭曲能量 —— 累积旋转变化+移动速度，驱动漩涡扭曲强度
 final class HandTrackingManager {
 
     /// 追踪结果：检测到的手部信息
@@ -25,6 +26,8 @@ final class HandTrackingManager {
         var gesture: HandGesture
         /// 手部包围盒大小（归一化）
         var handSize: Float
+        /// 手掌方向角度（弧度，视图坐标系，y 向下）
+        var rotation: Float
     }
 
     /// 手势类型
@@ -50,6 +53,21 @@ final class HandTrackingManager {
 
     /// 位置平滑系数（0~1，越大越平滑但延迟越大）
     private let smoothingFactor: CGFloat = 0.35
+
+    // MARK: - 扭曲能量系统
+
+    /// 累积扭曲角度（弧度）：每帧旋转变化+移动贡献不断累积，形成连续漩涡旋转
+    /// 这是驱动 shader 漩涡扭曲的核心参数 —— 手动得越快，扭得越多
+    private var accumulatedTwist: Float = 0
+
+    /// 扭曲能量（0~1）：随手部活动度升高，静止时衰减。控制扭曲可见强度。
+    private var _twistEnergy: Float = 0
+
+    /// 上一帧主手位置（用于计算移动速度）
+    private var lastPrimaryPosition: CGPoint?
+
+    /// 上一帧主手旋转角度（用于计算角速度）
+    private var lastPrimaryRotation: Float = 0
 
     /// 是否检测到手
     var hasHand: Bool { !hands.isEmpty }
@@ -81,16 +99,16 @@ final class HandTrackingManager {
     }
 
     /// 动态特效半径（基于手部状态自适应）
-    /// - 双手：距离的 40%，范围 0.12~0.35
-    /// - 单手：手部大小的 1.5 倍，范围 0.10~0.25
+    /// - 双手：距离的 45%，范围 0.15~0.40（加大范围使扭曲更明显）
+    /// - 单手：手部大小的 2.0 倍，范围 0.12~0.30
     var dynamicRadius: Float {
         if hands.count >= 2 {
             let dist = handsDistance
-            return min(max(dist * 0.4, 0.12), 0.35)
+            return min(max(dist * 0.45, 0.15), 0.40)
         } else if let hand = hands.first {
-            return min(max(hand.handSize * 1.5, 0.10), 0.25)
+            return min(max(hand.handSize * 2.0, 0.12), 0.30)
         }
-        return 0.18
+        return 0.22
     }
 
     /// 综合置信度
@@ -102,6 +120,16 @@ final class HandTrackingManager {
     /// 主手手势
     var primaryGesture: HandGesture {
         hands.first?.gesture ?? .unknown
+    }
+
+    /// 累积扭曲角度（弧度）—— 不断增长，驱动漩涡持续旋转
+    var primaryHandRotation: Float {
+        accumulatedTwist
+    }
+
+    /// 扭曲能量（0~1）—— 手动得越多能量越高，静止时衰减
+    var twistEnergy: Float {
+        _twistEnergy
     }
 
     private let handPoseRequest: VNDetectHumanHandPoseRequest
@@ -139,13 +167,15 @@ final class HandTrackingManager {
             let (rawPos, handSize) = computeHandCenterAndSize(obs)
             let gesture = detectGesture(obs)
             let confidence = obs.confidence
+            let rotation = computeHandRotation(obs)
 
             results.append(HandResult(
                 position: rawPos,
                 rawPosition: rawPos,
                 confidence: confidence,
                 gesture: gesture,
-                handSize: handSize
+                handSize: handSize,
+                rotation: rotation
             ))
         }
 
@@ -156,10 +186,53 @@ final class HandTrackingManager {
         // 帧间匹配 + 位置平滑
         let smoothedResults = smoothHands(topResults)
 
+        // 更新扭曲能量系统
+        updateTwistEnergy(smoothedResults)
+
         // 重置丢手计数
         lostFrameCount = 0
         lastHands = smoothedResults
         hands = smoothedResults
+    }
+
+    // MARK: - 扭曲能量系统
+
+    /// 每帧更新扭曲能量和累积角度
+    private func updateTwistEnergy(_ currentHands: [HandResult]) {
+        guard let primary = currentHands.first else {
+            // 无手时能量衰减
+            _twistEnergy *= 0.90
+            return
+        }
+
+        let pos = primary.position
+        let rot = primary.rotation
+
+        if let lastPos = lastPrimaryPosition {
+            // 位置移动速度
+            let dx = Float(pos.x - lastPos.x)
+            let dy = Float(pos.y - lastPos.y)
+            let moveSpeed = sqrt(dx * dx + dy * dy)
+
+            // 旋转角速度（处理角度回绕）
+            let rotDelta = atan2(sin(rot - lastPrimaryRotation), cos(rot - lastPrimaryRotation))
+            let rotSpeed = abs(rotDelta)
+
+            // 累积扭曲角度：旋转变化 + 移动贡献
+            // 旋转变化直接累积，移动按方向累积
+            accumulatedTwist += rotDelta * 4.0
+
+            // 移动也产生旋转（像手在空间中划圈）
+            let moveAngle = atan2(dy, dx)
+            accumulatedTwist += moveSpeed * 8.0 * sin(moveAngle + accumulatedTwist * 0.5)
+
+            // 扭曲能量：移动+旋转速度贡献，静止时衰减
+            let energyInput = min(moveSpeed * 6.0 + rotSpeed * 3.0, 1.5)
+            _twistEnergy = min(_twistEnergy * 0.88 + energyInput, 1.0)
+        }
+
+        lastPrimaryPosition = pos
+        lastPrimaryRotation = rot
     }
 
     // MARK: - 智能计算
@@ -271,6 +344,29 @@ final class HandTrackingManager {
         return .open
     }
 
+    /// 计算手掌方向角度：从手腕到食指尖的方向角
+    /// 返回视图坐标系（y 向下）中的弧度值，0 = 指向右方
+    private func computeHandRotation(_ obs: VNHumanHandPoseObservation) -> Float {
+        guard let allPoints = try? obs.recognizedPoints(.all) else { return 0 }
+
+        guard let wrist = allPoints[.wrist], wrist.confidence > 0,
+              let indexTip = allPoints[.indexTip], indexTip.confidence > 0 else {
+            return 0
+        }
+
+        // Vision 坐标系：左下角原点，y 向上
+        // 转换到视图坐标系：y 向下
+        let wristX = Float(wrist.location.x)
+        let wristY = Float(1.0 - wrist.location.y)
+        let indexX = Float(indexTip.location.x)
+        let indexY = Float(1.0 - indexTip.location.y)
+
+        let dx = indexX - wristX
+        let dy = indexY - wristY
+
+        return atan2(dy, dx)
+    }
+
     /// 帧间匹配 + 位置平滑：按距离最近原则匹配上一帧的手，做 EMA 平滑
     private func smoothHands(_ current: [HandResult]) -> [HandResult] {
         guard !lastHands.isEmpty else {
@@ -303,8 +399,14 @@ final class HandTrackingManager {
                     x: prev.position.x * (1 - alpha) + hand.position.x * alpha,
                     y: prev.position.y * (1 - alpha) + hand.position.y * alpha
                 )
+                // 角度平滑（处理角度回绕）
+                let prevAngle = prev.rotation
+                let currAngle = hand.rotation
+                let diff = atan2(sin(currAngle - prevAngle), cos(currAngle - prevAngle))
+                let smoothedAngle = prevAngle + diff * alpha
                 var smoothedHand = hand
                 smoothedHand.position = smoothed
+                smoothedHand.rotation = smoothedAngle
                 result.append(smoothedHand)
             } else {
                 result.append(hand)
@@ -317,6 +419,9 @@ final class HandTrackingManager {
     /// 丢手保持：手短暂丢失时保留最后位置，避免特效闪烁
     private func applyLostFrame() {
         lostFrameCount += 1
+        // 能量衰减
+        _twistEnergy *= 0.90
+
         if lostFrameCount <= maxLostFrames && !lastHands.isEmpty {
             // 保留最后位置，但降低置信度（逐渐淡出）
             let fadeFactor = 1.0 - Float(lostFrameCount) / Float(maxLostFrames)
@@ -328,6 +433,7 @@ final class HandTrackingManager {
         } else {
             hands = []
             lastHands = []
+            lastPrimaryPosition = nil
         }
     }
 
@@ -338,5 +444,9 @@ final class HandTrackingManager {
         hands = []
         lastHands = []
         lostFrameCount = 0
+        accumulatedTwist = 0
+        _twistEnergy = 0
+        lastPrimaryPosition = nil
+        lastPrimaryRotation = 0
     }
 }

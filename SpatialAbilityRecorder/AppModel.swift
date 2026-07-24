@@ -60,6 +60,8 @@ final class AppModel: ObservableObject {
             self.renderer.hasHand2 = self.handTrackingManager.hasBothHands
             self.renderer.confidence = adjustedConfidence
             self.renderer.effectRadius = self.handTrackingManager.dynamicRadius
+            self.renderer.handRotation = self.handTrackingManager.primaryHandRotation
+            self.renderer.twistEnergy = self.handTrackingManager.twistEnergy
             self.renderer.setTrackingActive(self.handTrackingManager.hasHand)
 
             // 3. 追踪结果回主线程更新 UI

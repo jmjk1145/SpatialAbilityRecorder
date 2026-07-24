@@ -82,176 +82,182 @@ struct PortalParams {
     float  intensity;     // 特效强度（追踪置信度）
     int    effectType;    // 0空间裂缝 1护盾 2烈焰 3闪电 4黑洞
     int    isFrontCamera; // 0后置 1前置
-    float  _pad0;
-    float  _pad1;
+    float  handRotation;  // 累积扭曲角度（弧度，随手部活动持续增长）
+    float  twistEnergy;   // 扭曲能量（0~1，手部活动时升高，静止时衰减）
 };
 
-// ---- 特效 0：空间裂缝（白色能量闪电 + 裂缝 + 空间扭曲 + 双手连接闪电） ----
-// 视觉风格：手指间的白色闪电/能量裂缝，空间被撕裂的效果
-// 双手时：两手间生成连接闪电 + 中点空间裂缝
+// ---- 特效 0：空间扭曲漩涡（漩涡扭曲 + 空间撕裂 + 能量闪电） ----
+// 视觉风格：手抓住空间并扭转，画面被漩涡扭曲，中心撕裂出虚空裂缝
+// 核心特征："扭" —— 相机画面围绕手部旋转扭曲，手动得越多扭得越剧烈
 float4 effectPortal(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
                     float dist, float radius, float time, float I, float aspect,
                     int isFront, texture2d<float> cameraTex, sampler s,
-                    float2 ctr1, float2 ctr2, float hasHand2) {
-    float4 color = cameraTex.sample(s, cameraUV);
-
-    // 白色/青色调色板（匹配视频中的能量效果）
-    float3 whiteHot   = float3(1.0, 1.0, 1.0);      // 白热核心
-    float3 energyCyan = float3(0.6, 0.9, 1.0);      // 青色能量
-    float3 electricBlue = float3(0.3, 0.6, 1.0);    // 电蓝色
-    float3 deepVoid   = float3(0.05, 0.05, 0.15);   // 裂缝内部虚空
+                    float2 ctr1, float2 ctr2, float hasHand2,
+                    float handRotation, float twistEnergy) {
+    // 调色板
+    float3 whiteHot     = float3(1.0, 1.0, 1.0);
+    float3 energyCyan   = float3(0.6, 0.9, 1.0);
+    float3 electricBlue = float3(0.3, 0.6, 1.0);
+    float3 deepVoid     = float3(0.02, 0.02, 0.08);
 
     float2 dirFromCenter = pos - ctr;
-    float angle = atan2(dirFromCenter.y, dirFromCenter.x);
-    float t = dist / radius;
+    float r = length(dirFromCenter);
+    float baseAngle = atan2(dirFromCenter.y, dirFromCenter.x);
 
-    // === 1. 空间扭曲（径向涟漪扭曲） ===
-    float distortStrength = smoothstep(radius * 1.5, 0.0, dist) * 0.015 * I;
-    if (distortStrength > 0.0005) {
-        float2 distortDir = normalize(dirFromCenter + float2(0.001, 0.001));
-        float ripple = sin(dist * 40.0 - time * 8.0) * distortStrength;
-        float2 distortedUV = uv + distortDir * ripple;
-        distortedUV = clamp(distortedUV, 0.0, 1.0);
-        float2 distortedCamUV = toCameraUV(distortedUV, isFront);
-        color = cameraTex.sample(s, distortedCamUV);
-    }
+    // === 1. 核心漩涡扭曲（"扭"效果的核心） ===
+    // 距离衰减：近中心扭曲最强，边缘平滑过渡
+    float falloff = 1.0 - smoothstep(0.0, radius * 2.0, r);
+    falloff = pow(falloff, 1.5);
+    falloff = clamp(falloff, 0.0, 1.0);
 
-    // === 2. 中心裂缝（不规则撕裂形状） ===
-    // 使用噪声创建不规则的裂缝边缘
-    float crackNoise = fbm(float2(angle * 3.0 + time * 0.5, dist * 8.0));
-    float crackRadius = radius * (0.7 + crackNoise * 0.5);
-    float crackMask = smoothstep(crackRadius, crackRadius * 0.85, dist);
+    // 扭曲角度组成：
+    // - handRotation：累积扭曲角度（手动得越多，累积越大，漩涡转得越多）
+    // - time * 1.5：持续基础旋转（保证静止时也有可见漩涡旋转）
+    // - energyMult：twistEnergy 越高手扭得越剧烈（最多 3 倍）
+    float baseTwist = handRotation + time * 1.5;
+    float energyMult = 1.0 + twistEnergy * 2.0;
+    float twistAmount = baseTwist * energyMult;
 
-    if (crackMask > 0.01) {
-        // 裂缝内部：虚空 + 能量
+    // 螺旋分量：中等距离额外扭曲波
+    float spiralExtra = sin(r / max(radius, 0.001) * 3.14159) * twistEnergy * 1.5;
+
+    float twistedTheta = baseAngle + (twistAmount + spiralExtra) * falloff;
+
+    // 径向 pinch：向中心拉近像素，增强漩涡吸入感
+    float pinch = twistEnergy * 0.25 * falloff;
+    float twistedR = r * (1.0 - pinch);
+
+    float2 twistedDir = float2(cos(twistedTheta), sin(twistedTheta)) * twistedR;
+    float2 twistedPos = ctr + twistedDir;
+    float2 twistedUV = float2(twistedPos.x / aspect, twistedPos.y);
+    twistedUV = clamp(twistedUV, 0.0, 1.0);
+    float2 twistedCamUV = toCameraUV(twistedUV, isFront);
+    float4 color = cameraTex.sample(s, twistedCamUV);
+
+    // === 2. 中心虚空（空间被撕裂的区域） ===
+    float voidRadius = radius * 0.25;
+    float voidMask = smoothstep(voidRadius, voidRadius * 0.6, r);
+
+    if (voidMask > 0.01) {
         float3 voidColor = deepVoid;
-        float voidNoise = fbm(float2(dist * 20.0 + time * 3.0, angle * 5.0));
-        voidColor += electricBlue * voidNoise * 0.4;
-        voidColor += whiteHot * (1.0 - t) * 0.3;
-
-        color.rgb = mix(color.rgb, voidColor, crackMask * I);
-
-        // 裂缝边缘：白热发光
-        float edgeGlow = smoothstep(crackRadius * 0.85, crackRadius * 0.9, dist)
-                       - smoothstep(crackRadius * 0.9, crackRadius * 0.95, dist);
-        color.rgb += whiteHot * edgeGlow * 2.5 * I;
+        float voidEnergy = fbm(float2(r * 30.0 + time * 4.0, baseAngle * 4.0 + time * 2.0));
+        voidColor += electricBlue * voidEnergy * 0.5;
+        voidColor += whiteHot * (1.0 - r / max(voidRadius, 0.001)) * 0.2;
+        color.rgb = mix(color.rgb, voidColor, voidMask * I);
     }
 
-    // === 3. 闪电弧（从中心放射的多条分叉闪电） ===
+    // === 3. 虚空边缘撕裂光（白热边缘） ===
+    float tearEdge = smoothstep(voidRadius * 0.6, voidRadius, r)
+                   - smoothstep(voidRadius, voidRadius * 1.2, r);
+    float tearNoise = fbm(float2(baseAngle * 5.0 + time * 1.0, r * 15.0));
+    tearEdge *= 0.5 + tearNoise * 1.0;
+    color.rgb += whiteHot * tearEdge * 3.0 * I;
+
+    // === 4. 螺旋能量纹（跟随扭曲方向的能量流） ===
+    float spiralAngle = baseAngle + handRotation * 1.5 + time * 1.2;
+    float spiralDist = r / max(radius, 0.001);
+    float spiralPattern = sin(spiralAngle * 3.0 - spiralDist * 12.0 + time * 3.0);
+    float spiralMask = smoothstep(radius * 1.5, 0.0, r) * smoothstep(voidRadius, r);
+    color.rgb += energyCyan * max(spiralPattern, 0.0) * spiralMask * 0.4 * I;
+
+    float spiral2 = sin(-spiralAngle * 5.0 + spiralDist * 20.0 - time * 2.0);
+    color.rgb += electricBlue * max(spiral2, 0.0) * spiralMask * 0.2 * I;
+
+    // === 5. 闪电弧（从中心放射，跟随扭曲旋转） ===
     float lightning = 0.0;
     float lightningCore = 0.0;
-    int numBolts = 9;
+    int numBolts = 7;
     for (int b = 0; b < numBolts; b++) {
         float fb = float(b);
-        // 每条闪电有不同的角度，随时间缓慢旋转
-        float boltAngle = fb / float(numBolts) * 6.28318 + time * 0.4;
+        float boltAngle = fb / float(numBolts) * 6.28318 + handRotation * 1.0 + time * 0.5;
         float2 boltDir = float2(cos(boltAngle), sin(boltAngle));
 
-        // 沿闪电方向的距离
         float along = dot(dirFromCenter, boltDir);
-        if (along < 0.0 || along > radius * 2.0) continue;
+        if (along < 0.0 || along > radius * 1.8) continue;
 
-        // 垂直距离（闪电的粗细）
         float2 perpDir = float2(-boltDir.y, boltDir.x);
         float perp = abs(dot(dirFromCenter, perpDir));
 
-        // 闪电抖动（噪声驱动的之字形）
-        float jitter = (noise2D(float2(along * 15.0, fb * 7.3 + floor(time * 10.0) * 1.7)) - 0.5) * radius * 0.35;
+        float jitter = (noise2D(float2(along * 15.0, fb * 7.3 + floor(time * 12.0) * 1.7)) - 0.5) * radius * 0.3;
         perp = abs(perp - jitter);
 
-        // 闪电粗细随距离衰减
-        float thickness = 0.004 * (1.0 - along / (radius * 2.0)) + 0.001;
-        float bolt = smoothstep(thickness, 0.0, perp) * smoothstep(radius * 2.0, 0.0, along);
+        float thickness = 0.003 * (1.0 - along / (radius * 1.8)) + 0.0008;
+        float bolt = smoothstep(thickness, 0.0, perp) * smoothstep(radius * 1.8, 0.0, along);
 
-        // 闪电闪烁
-        float flicker = step(0.2, hash21(float2(floor(time * 15.0), fb)));
-        bolt *= flicker * 0.6 + 0.4;
+        float flicker = step(0.15, hash21(float2(floor(time * 18.0), fb)));
+        bolt *= flicker * 0.7 + 0.3;
 
         lightning += bolt;
-        lightningCore += bolt * smoothstep(0.0, radius * 0.3, along);
+        lightningCore += bolt * smoothstep(voidRadius, voidRadius * 2.0, along);
     }
 
-    // 闪电颜色：白色核心 + 青色外发光
     color.rgb += whiteHot * lightningCore * 2.0 * I;
-    color.rgb += energyCyan * lightning * 0.8 * I;
+    color.rgb += energyCyan * lightning * 0.7 * I;
 
-    // === 4. 能量粒子（白色火花） ===
-    float2 sparkUv = dirFromCenter * 10.0;
-    for (int sp = 0; sp < 4; sp++) {
-        float spTime = time * (2.0 + float(sp) * 0.4) + float(sp) * 1.9;
-        float2 offset = float2(cos(spTime), sin(spTime * 1.3)) * 0.3;
-        float2 sparkPos = sparkUv + offset * 4.0;
-        float sparkN = hash21(floor(sparkPos) + floor(spTime));
-        float spark = step(0.93, sparkN) * smoothstep(radius * 1.5, 0.0, dist);
-        color.rgb += whiteHot * spark * 0.6 * I;
-    }
+    // === 6. 中心白热核心 ===
+    float core = exp(-pow(r * 25.0, 2.0));
+    float corePulse = sin(time * 12.0) * 0.2 + 0.8;
+    color.rgb += whiteHot * core * corePulse * 1.2 * I;
 
-    // === 5. 中心白热核心 ===
-    float core = exp(-pow(dist * 30.0, 2.0));
-    float corePulse = sin(time * 10.0) * 0.2 + 0.8;
-    color.rgb += whiteHot * core * corePulse * 1.5 * I;
+    // === 7. 能量光晕 ===
+    float glowInner = exp(-pow(max(r - voidRadius, 0.0) * 12.0, 2.0));
+    color.rgb += energyCyan * glowInner * 0.6 * I;
 
-    // === 6. 能量光晕（白色 + 青色双层） ===
-    float glowInner = exp(-pow(max(dist - radius * 0.3, 0.0) * 15.0, 2.0));
-    color.rgb += energyCyan * glowInner * 0.8 * I;
+    float glowOuter = exp(-pow(max(r - radius, 0.0) * 7.0, 2.0));
+    color.rgb += electricBlue * glowOuter * 0.4 * I;
 
-    float glowOuter = exp(-pow(max(dist - radius, 0.0) * 8.0, 2.0));
-    color.rgb += electricBlue * glowOuter * 0.5 * I;
-
-    // === 7. 扩散冲击波 ===
+    // === 8. 扩散冲击波 ===
     for (int i = 0; i < 3; i++) {
-        float phase = fract(time * 0.6 + float(i) * 0.33);
-        float ringDist = radius * (0.5 + phase * 1.2);
-        float ring = smoothstep(0.005, 0.0, abs(dist - ringDist));
-        color.rgb += whiteHot * ring * (1.0 - phase) * 0.6 * I;
+        float phase = fract(time * 0.5 + float(i) * 0.33);
+        float ringDist = radius * (0.4 + phase * 1.3);
+        float ring = smoothstep(0.006, 0.0, abs(r - ringDist));
+        color.rgb += whiteHot * ring * (1.0 - phase) * 0.5 * I;
     }
 
-    // === 8. 空间碎片（玻璃碎裂效果） ===
-    float shardNoise = noise2D(float2(angle * 6.0 + time * 0.3, dist * 12.0));
-    float shardMask = step(0.7, shardNoise) * smoothstep(radius * 1.3, radius * 0.5, dist)
-                    * smoothstep(radius * 0.2, radius * 0.4, dist);
-    float shardFlicker = step(0.5, hash21(float2(floor(angle * 10.0), floor(time * 6.0))));
-    color.rgb += energyCyan * shardMask * shardFlicker * 0.4 * I;
+    // === 9. 能量粒子 ===
+    float2 sparkUv = dirFromCenter * 8.0;
+    for (int sp = 0; sp < 3; sp++) {
+        float spTime = time * (2.5 + float(sp) * 0.5) + float(sp) * 2.1;
+        float2 offset = float2(cos(spTime + handRotation), sin(spTime * 1.3 + handRotation)) * 0.3;
+        float2 sparkPos = sparkUv + offset * 3.0;
+        float sparkN = hash21(floor(sparkPos) + floor(spTime));
+        float spark = step(0.94, sparkN) * smoothstep(radius * 1.3, 0.0, r);
+        color.rgb += whiteHot * spark * 0.5 * I;
+    }
 
-    // === 9. 空间扭曲色差 ===
-    float caStrength = smoothstep(radius * 1.5, radius * 0.3, dist) * 0.008 * I;
+    // === 10. 色差（边缘色彩分离，扭曲越强色差越大） ===
+    float caStrength = smoothstep(radius * 1.5, voidRadius, r) * 0.006 * I * (1.0 + twistEnergy);
     if (caStrength > 0.0005) {
-        color.r = mix(color.r, cameraTex.sample(s, cameraUV + float2(caStrength, 0.0)).r, 0.5);
-        color.b = mix(color.b, cameraTex.sample(s, cameraUV - float2(caStrength, 0.0)).b, 0.5);
+        color.r = mix(color.r, cameraTex.sample(s, twistedCamUV + float2(caStrength, 0.0)).r, 0.5);
+        color.b = mix(color.b, cameraTex.sample(s, twistedCamUV - float2(caStrength, 0.0)).b, 0.5);
     }
 
-    // === 10. 双手连接闪电（两手之间的能量电弧） ===
+    // === 11. 双手连接闪电 ===
     if (hasHand2 > 0.5) {
         float2 handDir = ctr2 - ctr1;
         float handLen = length(handDir);
         float2 handDirN = handDir / max(handLen, 0.001);
         float2 perpN = float2(-handDirN.y, handDirN.x);
 
-        // 当前点到两手连线的投影
         float2 toPos = pos - ctr1;
         float along = dot(toPos, handDirN);
         float perp = abs(dot(toPos, perpN));
 
-        // 闪电抖动（之字形）
         float jit1 = (noise2D(float2(along * 20.0, floor(time * 12.0) * 1.3)) - 0.5) * handLen * 0.15;
         float jit2 = (noise2D(float2(along * 30.0, floor(time * 15.0) * 2.1 + 5.0)) - 0.5) * handLen * 0.1;
         float jitter = jit1 + jit2;
         perp = abs(perp - jitter);
 
-        // 闪电粗细
         float boltThickness = 0.003 + 0.002 * sin(time * 20.0);
         float arc = smoothstep(boltThickness, 0.0, perp) * smoothstep(0.0, 0.02, along) * smoothstep(handLen, handLen - 0.02, along);
 
-        // 闪电闪烁
         float arcFlicker = step(0.15, hash21(float2(floor(time * 18.0), 0.0)));
         arc *= arcFlicker * 0.7 + 0.3;
 
-        // 白色核心 + 青色外发光
         color.rgb += whiteHot * arc * 3.0 * I;
         color.rgb += energyCyan * smoothstep(boltThickness * 3.0, 0.0, perp) * 0.5 * I
                    * smoothstep(0.0, 0.02, along) * smoothstep(handLen, handLen - 0.02, along);
 
-        // 沿连线分布的能量火花
         float sparkAlong = hash21(float2(floor(along * 15.0), floor(time * 8.0)));
         float sparkArc = step(0.92, sparkAlong) * smoothstep(0.0, 0.05, along) * smoothstep(handLen, handLen - 0.05, along);
         color.rgb += whiteHot * sparkArc * 0.4 * I;
@@ -523,7 +529,7 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
 
     switch (params.effectType) {
         case 0:
-            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2);
+            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2, params.handRotation, params.twistEnergy);
         case 1:
             return effectShield(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         case 2:
@@ -533,7 +539,7 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
         case 4:
             return effectBlackHole(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         default:
-            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2);
+            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2, params.handRotation, params.twistEnergy);
     }
 }
 
