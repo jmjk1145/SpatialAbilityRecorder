@@ -3,8 +3,9 @@ import UIKit
 
 /// 相机管理：配置 AVCaptureSession，逐帧交付视频像素缓冲，支持前后摄像头切换。
 ///
-/// 重要：不使用 AVCaptureConnection.videoOrientation（对 AVCaptureVideoDataOutput 不可靠），
-/// 原始 buffer 始终为横屏 1280x720（传感器原生方向），旋转在 Metal shader 中处理。
+/// 使用 AVFoundation 的 videoOrientation=.portrait 直接输出竖屏 buffer（720x1280），
+/// 前置摄像头启用 isVideoMirrored 实现自拍镜像。
+/// Metal shader 无需处理旋转，UV 直接映射。
 final class CameraManager: NSObject {
 
     /// 每收到一帧时回调（sampleBuffer + 解出的 CVPixelBuffer）
@@ -23,8 +24,8 @@ final class CameraManager: NSObject {
 
     var captureSession: AVCaptureSession { session }
 
-    /// 原始输出尺寸（横屏 1280x720，portrait 旋转在 shader 中处理）
-    private(set) var outputSize: CGSize = CGSize(width: 1280, height: 720)
+    /// 输出尺寸（竖屏 720x1280，AVFoundation 已旋转）
+    private(set) var outputSize: CGSize = CGSize(width: 720, height: 1280)
 
     /// 当前是否使用前置摄像头
     var isUsingFrontCamera: Bool { currentPosition == .front }
@@ -83,11 +84,14 @@ final class CameraManager: NSObject {
                 return
             }
 
-            // 不在 AVFoundation 层镜像，由 Metal shader 处理前置摄像头镜像
+            // 设置竖屏方向 + 前置镜像（AVFoundation 直接输出竖屏 buffer）
             if let conn = self.videoOutput.connection(with: .video) {
+                if conn.isVideoOrientationSupported {
+                    conn.videoOrientation = .portrait
+                }
                 if conn.isVideoMirroringSupported {
                     conn.automaticallyAdjustsVideoMirroring = false
-                    conn.isVideoMirrored = false
+                    conn.isVideoMirrored = (newPosition == .front)
                 }
             }
 
@@ -106,7 +110,7 @@ final class CameraManager: NSObject {
     private func configureSession() {
         session.beginConfiguration()
 
-        // 预设：720p（横屏 1280x720）
+        // 预设：720p（AVFoundation 旋转后输出竖屏 720x1280）
         session.sessionPreset = .hd1280x720
 
         // 视频输入（后置摄像头）
@@ -138,18 +142,21 @@ final class CameraManager: NSObject {
             session.addOutput(videoOutput)
         }
 
-        // 仅设置镜像，不设 videoOrientation（由 shader 处理旋转）
+        // 设置竖屏方向 + 后置不镜像（AVFoundation 直接输出竖屏 buffer）
         if let conn = videoOutput.connection(with: .video) {
+            if conn.isVideoOrientationSupported {
+                conn.videoOrientation = .portrait
+            }
             if conn.isVideoMirroringSupported {
                 conn.automaticallyAdjustsVideoMirroring = false
-                conn.isVideoMirrored = false
+                conn.isVideoMirrored = false  // 后置不镜像
             }
         }
 
         session.commitConfiguration()
 
-        // 原始横屏尺寸
-        outputSize = CGSize(width: 1280, height: 720)
+        // 竖屏尺寸（AVFoundation 已旋转）
+        outputSize = CGSize(width: 720, height: 1280)
 
         isConfigured = true
     }

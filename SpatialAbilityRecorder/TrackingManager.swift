@@ -29,7 +29,7 @@ final class TrackingManager {
     /// 锚点框的归一化半边长（点击后生成的初始检测框大小）
     private let anchorHalfSize: CGFloat = 0.12
 
-    /// 当前是否使用前置摄像头（决定 Vision orientation）
+    /// 当前是否使用前置摄像头（AVFoundation 已处理镜像，追踪无需特殊处理）
     var isFrontCamera: Bool = false
 
     /// 启动追踪：用户点击点（视图坐标系，左上角原点）
@@ -38,6 +38,7 @@ final class TrackingManager {
         defer { lock.unlock() }
 
         // Vision 坐标系原点在左下角，y 向上 → 翻转 y
+        // AVFoundation 已处理镜像，无需手动翻转 x
         let visionPoint = CGPoint(x: viewNormalizedPoint.x, y: 1.0 - viewNormalizedPoint.y)
 
         let bbox = CGRect(x: visionPoint.x - anchorHalfSize,
@@ -67,10 +68,8 @@ final class TrackingManager {
         // 复用上一帧观测结果
         request.inputObservation = lastObservation ?? request.inputObservation
 
-        // 相机 buffer 为横屏 1280x720（传感器原生方向），需告知 Vision 正确的方向：
-        // 后置摄像头：.right（顺时针旋转 90° → 竖屏）
-        // 前置摄像头：.rightMirrored（旋转 90° + 水平镜像 → 竖屏，与用户看到的画面一致）
-        let orientation: CGImagePropertyOrientation = isFrontCamera ? .rightMirrored : .right
+        // 相机 buffer 为竖屏 720x1280（AVFoundation 已旋转为正立方向），Vision 使用 .up
+        let orientation: CGImagePropertyOrientation = .up
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
 
         do {
@@ -91,7 +90,8 @@ final class TrackingManager {
         let center = CGPoint(x: result.boundingBox.midX,
                              y: result.boundingBox.midY)
 
-        // Vision 坐标 → 视图坐标（翻转 y，使 0=顶部, 1=底部）
+        // Vision 坐标 → 视图坐标：翻转 y（Vision 底部原点 → 视图顶部原点）
+        // AVFoundation 已处理镜像，x 无需翻转
         let viewPoint = CGPoint(x: center.x, y: 1.0 - center.y)
         lastTrackedPointNormalized = viewPoint
         onTrackUpdate?(viewPoint, confidence)

@@ -115,13 +115,13 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
               portalPipeline != nil,
               blitPipeline != nil else { return }
 
-        // 相机 buffer 始终为横屏 1280x720（传感器原生方向）
-        let camWidth = CVPixelBufferGetWidth(cameraBuffer)   // 1280
-        let camHeight = CVPixelBufferGetHeight(cameraBuffer)  // 720
+        // 相机 buffer 为竖屏 720x1280（AVFoundation 已旋转）
+        let camWidth = CVPixelBufferGetWidth(cameraBuffer)   // 720
+        let camHeight = CVPixelBufferGetHeight(cameraBuffer)  // 1280
 
-        // 渲染目标为竖屏 720x1280（交换宽高）
-        let renderWidth = camHeight   // 720
-        let renderHeight = camWidth   // 1280
+        // 渲染目标与相机 buffer 尺寸一致（竖屏 720x1280）
+        let renderWidth = camWidth   // 720
+        let renderHeight = camHeight  // 1280
         outputSize = CGSize(width: CGFloat(renderWidth), height: CGFloat(renderHeight))
 
         // 首帧时设置 drawable 尺寸为竖屏（仅一次，避免每帧重设导致性能问题）
@@ -135,7 +135,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let drawable = view.currentDrawable,
-              // 相机纹理使用原始横屏尺寸
+              // 相机纹理使用竖屏尺寸
               let cameraTexRef = makeTextureRef(from: cameraBuffer, width: camWidth, height: camHeight),
               // 离屏和录制缓冲使用竖屏尺寸
               let offscreenBuffer = dequeueOffscreenBuffer(),

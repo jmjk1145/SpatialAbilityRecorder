@@ -60,26 +60,14 @@ float fbm(float2 p) {
     return v;
 }
 
-// MARK: - 坐标转换：竖屏屏幕 UV → 横屏相机纹理 UV
+// MARK: - 坐标转换：竖屏屏幕 UV → 相机纹理 UV
 //
-// 相机 buffer 始终为横屏 1280x720（传感器原生方向），不使用 videoOrientation。
-// 顶点着色器已翻转 Y，所以 UV (0,0)=左上, (1,1)=右下（与 Metal 纹理坐标一致）。
-//
-// 后置摄像头（竖屏持机）：横屏图像需顺时针旋转 90° → 竖屏
-//   推导：竖屏(x,y) → 横屏(y, 1-x)
-//   cameraTexUV = float2(screenUV.y, 1.0 - screenUV.x)
-//
-// 前置摄像头（不在 AVFoundation 层镜像，由 shader 处理）：旋转 + 水平镜像
-//   cameraTexUV = float2(1.0 - screenUV.y, 1.0 - screenUV.x)
+// AVFoundation 已通过 videoOrientation=.portrait 将 buffer 旋转为竖屏方向，
+// 前置摄像头通过 isVideoMirrored 完成镜像。
+// 因此渲染目标 UV 与相机纹理 UV 完全一致，直接返回即可。
 
 float2 toCameraUV(float2 screenUV, int isFront) {
-    if (isFront == 1) {
-        // 前置：旋转 90° CW + 水平镜像
-        return float2(1.0 - screenUV.y, 1.0 - screenUV.x);
-    } else {
-        // 后置：旋转 90° CW
-        return float2(screenUV.y, 1.0 - screenUV.x);
-    }
+    return screenUV;
 }
 
 // MARK: - 片元：空间异能特效
@@ -96,57 +84,132 @@ struct PortalParams {
     float  _pad1;
 };
 
-// ---- 特效 0：空间传送门（漩涡扭曲） ----
+// ---- 特效 0：空间传送门（漩涡扭曲 + 裂缝 + 粒子） ----
 float4 effectPortal(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
                     float dist, float radius, float time, float I, float aspect,
                     int isFront, texture2d<float> cameraTex, sampler s) {
     float4 color = cameraTex.sample(s, cameraUV);
 
-    float3 portalTint = float3(0.25, 0.55, 1.0);
-    float3 rimColor   = float3(0.45, 0.75, 1.0);
+    float3 deepBlue   = float3(0.1, 0.2, 0.6);
+    float3 portalTint = float3(0.3, 0.6, 1.0);
+    float3 rimColor   = float3(0.5, 0.8, 1.0);
+    float3 hotColor   = float3(0.9, 0.95, 1.0);
+    float3 sparkColor = float3(0.4, 0.7, 1.0);
 
-    // 传送门内部：漩涡扭曲
-    if (dist < radius) {
+    // === 1. 传送门内部：多层漩涡扭曲 ===
+    if (dist < radius * 1.1) {
         float t = dist / radius;
-        float angle = (1.0 - t) * 5.5 + time * 2.2;
+        float t1 = clamp(t, 0.0, 1.0);
+
+        // 第一层漩涡：主旋转
+        float angle1 = (1.0 - t1) * 6.0 + time * 2.5;
+        // 第二层漩涡：反向小幅旋转（增加复杂度）
+        float angle2 = (1.0 - t1) * 3.0 - time * 1.8;
+
         float2 dir = pos - ctr;
-        float ca = cos(angle), sa = sin(angle);
-        float2 newDir = float2(dir.x * ca - dir.y * sa, dir.x * sa + dir.y * ca);
-        float2 samplePos = ctr + newDir * (t * 0.85);
-        // 从等比像素空间转回竖屏 UV 空间
+        float ca1 = cos(angle1), sa1 = sin(angle1);
+        float2 newDir1 = float2(dir.x * ca1 - dir.y * sa1, dir.x * sa1 + dir.y * ca1);
+        float ca2 = cos(angle2), sa2 = sin(angle2);
+        float2 newDir2 = float2(newDir1.x * ca2 - newDir1.y * sa2, newDir1.x * sa2 + newDir1.y * ca2);
+
+        float2 samplePos = ctr + newDir2 * (t1 * 0.9 + 0.05);
         float2 samplePortraitUV = float2(samplePos.x / aspect, samplePos.y);
         samplePortraitUV = clamp(samplePortraitUV, 0.0, 1.0);
-        // 转换到相机纹理 UV
         float2 sampleCamUV = toCameraUV(samplePortraitUV, isFront);
         float4 warped = cameraTex.sample(s, sampleCamUV);
-        warped.rgb *= mix(0.35, 0.9, t);
-        warped.rgb += portalTint * (1.0 - t) * 0.45 * I;
-        float shimmer = sin(time * 7.0 + t * 18.0) * 0.5 + 0.5;
-        warped.rgb += portalTint * shimmer * (1.0 - t) * 0.25 * I;
-        color = mix(color, warped, smoothstep(radius, radius - 0.005, dist));
+
+        // 内部变暗 + 蓝色调
+        warped.rgb *= mix(0.15, 0.7, t1);
+        warped.rgb += deepBlue * (1.0 - t1) * 0.6 * I;
+
+        // 闪烁效果
+        float shimmer = sin(time * 8.0 + t1 * 20.0) * 0.5 + 0.5;
+        warped.rgb += portalTint * shimmer * (1.0 - t1) * 0.3 * I;
+
+        // 能量流动纹理
+        float energyFlow = fbm(float2(t1 * 5.0 + time * 0.8, atan2(dir.y, dir.x) * 2.0));
+        warped.rgb += portalTint * energyFlow * (1.0 - t1) * 0.25 * I;
+
+        color = mix(color, warped, smoothstep(radius * 1.1, radius * 0.98, dist));
     }
 
-    // 边缘高光环
-    float rimWidth = 0.012;
+    // === 2. 裂缝线（从中心向外辐射） ===
+    float2 dirFromCenter = pos - ctr;
+    float angle = atan2(dirFromCenter.y, dirFromCenter.x);
+    int numCracks = 8;
+    float crackIntensity = 0.0;
+    for (int c = 0; c < numCracks; c++) {
+        float crackAngle = float(c) / float(numCracks) * 6.28318 + time * 0.3;
+        float angleDiff = abs(atan2(sin(angle - crackAngle), cos(angle - crackAngle)));
+        // 裂缝宽度随距离变化
+        float crackWidth = 0.03 + 0.02 * sin(time * 2.0 + float(c) * 1.7);
+        float crack = smoothstep(crackWidth, 0.0, angleDiff) * smoothstep(radius * 1.3, radius * 0.3, dist);
+        // 裂缝随机闪烁
+        float flicker = step(0.3, hash21(float2(float(c), floor(time * 4.0))));
+        crackIntensity += crack * (0.5 + flicker * 0.5);
+    }
+    crackIntensity = clamp(crackIntensity, 0.0, 1.5);
+    color.rgb += hotColor * crackIntensity * 0.6 * I;
+
+    // === 3. 能量粒子（火花） ===
+    float2 sparkUv = dirFromCenter * 12.0;
+    for (int sp = 0; sp < 3; sp++) {
+        float spTime = time * (1.5 + float(sp) * 0.3) + float(sp) * 2.1;
+        float2 offset = float2(cos(spTime), sin(spTime * 1.3)) * 0.5;
+        float2 sparkPos = sparkUv + offset * 3.0;
+        float sparkN = hash21(floor(sparkPos) + floor(spTime));
+        float spark = step(0.94, sparkN) * smoothstep(radius * 1.2, 0.0, dist);
+        float sparkSize = step(0.94, sparkN) * (1.0 - dist / radius);
+        color.rgb += sparkColor * spark * sparkSize * 0.8 * I;
+    }
+
+    // === 4. 边缘高光环（双层） ===
+    float rimWidth = 0.015;
     float rim = smoothstep(radius, radius - rimWidth, dist)
-              - smoothstep(radius - rimWidth, radius - rimWidth * 2.5, dist);
-    color.rgb += rimColor * rim * 1.8 * I;
+              - smoothstep(radius - rimWidth, radius - rimWidth * 3.0, dist);
+    color.rgb += rimColor * rim * 2.2 * I;
 
-    // 外发光
-    float outerGlow = exp(-pow(max(dist - radius, 0.0) * 14.0, 2.0));
-    color.rgb += rimColor * outerGlow * 0.7 * I;
+    // 内层细环
+    float innerRim = smoothstep(radius * 0.85, radius * 0.85 - 0.008, dist)
+                   - smoothstep(radius * 0.85 - 0.008, radius * 0.85 - 0.016, dist);
+    color.rgb += hotColor * innerRim * 1.5 * I;
 
-    // 扩散光环
-    for (int i = 0; i < 3; i++) {
-        float phase = fract(time * 0.45 + float(i) * 0.333);
-        float ringDist = radius + phase * 0.32;
-        float ring = smoothstep(0.008, 0.0, abs(dist - ringDist));
-        color.rgb += rimColor * ring * (1.0 - phase) * 0.45 * I;
+    // === 5. 外发光（更强的扩散光） ===
+    float outerGlow = exp(-pow(max(dist - radius, 0.0) * 10.0, 2.0));
+    color.rgb += rimColor * outerGlow * 0.9 * I;
+    // 第二层柔和外发光
+    float softGlow = exp(-pow(max(dist - radius, 0.0) * 5.0, 2.0));
+    color.rgb += portalTint * softGlow * 0.3 * I;
+
+    // === 6. 扩散光环 ===
+    for (int i = 0; i < 4; i++) {
+        float phase = fract(time * 0.4 + float(i) * 0.25);
+        float ringDist = radius + phase * 0.35;
+        float ring = smoothstep(0.006, 0.0, abs(dist - ringDist));
+        color.rgb += rimColor * ring * (1.0 - phase) * 0.5 * I;
     }
 
-    // 中心亮点
-    float core = exp(-pow(dist * 30.0, 2.0));
-    color.rgb += float3(0.8, 0.9, 1.0) * core * 0.6 * I;
+    // === 7. 中心亮点 + 能量核心 ===
+    float core = exp(-pow(dist * 25.0, 2.0));
+    float corePulse = sin(time * 6.0) * 0.3 + 0.7;
+    color.rgb += hotColor * core * corePulse * 0.8 * I;
+
+    // 中心能量旋涡
+    float swirlNoise = fbm(float2(dist * 15.0 + time * 3.0, angle * 3.0));
+    color.rgb += portalTint * swirlNoise * core * 0.5 * I;
+
+    // === 8. 外围微光粒子 ===
+    float outerSparkN = hash21(floor(dirFromCenter * 8.0) + floor(time * 5.0));
+    float outerSpark = step(0.97, outerSparkN) * smoothstep(radius * 2.0, radius * 0.8, dist)
+                     * smoothstep(radius * 0.5, radius * 0.3, dist);
+    color.rgb += sparkColor * outerSpark * 0.5 * I;
+
+    // === 9. 空间扭曲色差（强化异能感） ===
+    float caStrength = smoothstep(radius * 2.0, radius * 0.5, dist) * 0.006 * I;
+    if (caStrength > 0.0005) {
+        color.r = mix(color.r, cameraTex.sample(s, cameraUV + float2(caStrength, 0.0)).r, 0.4);
+        color.b = mix(color.b, cameraTex.sample(s, cameraUV - float2(caStrength, 0.0)).b, 0.4);
+    }
 
     return color;
 }
@@ -378,7 +441,7 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
     float2 uv = in.uv;  // 屏幕坐标 UV (0,0=左上, 1,1=右下)，顶点着色器已翻转 Y
     float aspect = params.aspect;  // 720/1280 ≈ 0.5625
 
-    // 将竖屏屏幕 UV 转换为横屏相机纹理 UV（处理旋转 + 前置镜像）
+    // UV 直接映射（AVFoundation 已处理旋转和镜像）
     float2 cameraUV = toCameraUV(uv, params.isFrontCamera);
 
     // 等比像素空间（用于距离计算），UV 已翻转所以 y 方向与视图坐标一致（0=顶部）
