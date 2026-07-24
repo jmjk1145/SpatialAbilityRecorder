@@ -136,7 +136,7 @@ float4 effectShield(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
     float2 hexUv = pos - ctr;
     hexUv.y /= 0.866; // sqrt(3)/2，使六边形等比
     float2 h = float2(hexUv.x * 1.5, hexUv.y);
-    float2 a = mod(h, 1.0) - 0.5;
+    float2 a = fmod(h, 1.0) - 0.5;
     float hex = abs(a.x) + abs(a.y) * 0.5 + abs(a.x - a.y) * 0.5;
     float hexLine = smoothstep(0.45, 0.5, hex);
 
