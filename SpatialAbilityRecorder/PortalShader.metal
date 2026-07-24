@@ -73,7 +73,9 @@ float2 toCameraUV(float2 screenUV, int isFront) {
 // MARK: - 片元：空间异能特效
 
 struct PortalParams {
-    float2 center;        // 归一化锚点（视图坐标：左上角原点，0=顶部）
+    float2 center1;       // 第一只手位置（视图坐标：左上角原点，0=顶部）
+    float2 center2;       // 第二只手位置
+    float  hasHand2;      // 是否有第二只手 (0.0 或 1.0)
     float  time;          // 动画时间（秒）
     float  aspect;        // 竖屏宽高比 width/height = 720/1280
     float  radius;        // 特效归一化半径
@@ -84,11 +86,13 @@ struct PortalParams {
     float  _pad1;
 };
 
-// ---- 特效 0：空间裂缝（白色能量闪电 + 裂缝 + 空间扭曲） ----
+// ---- 特效 0：空间裂缝（白色能量闪电 + 裂缝 + 空间扭曲 + 双手连接闪电） ----
 // 视觉风格：手指间的白色闪电/能量裂缝，空间被撕裂的效果
+// 双手时：两手间生成连接闪电 + 中点空间裂缝
 float4 effectPortal(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
                     float dist, float radius, float time, float I, float aspect,
-                    int isFront, texture2d<float> cameraTex, sampler s) {
+                    int isFront, texture2d<float> cameraTex, sampler s,
+                    float2 ctr1, float2 ctr2, float hasHand2) {
     float4 color = cameraTex.sample(s, cameraUV);
 
     // 白色/青色调色板（匹配视频中的能量效果）
@@ -214,6 +218,43 @@ float4 effectPortal(float2 uv, float2 cameraUV, float2 pos, float2 ctr,
     if (caStrength > 0.0005) {
         color.r = mix(color.r, cameraTex.sample(s, cameraUV + float2(caStrength, 0.0)).r, 0.5);
         color.b = mix(color.b, cameraTex.sample(s, cameraUV - float2(caStrength, 0.0)).b, 0.5);
+    }
+
+    // === 10. 双手连接闪电（两手之间的能量电弧） ===
+    if (hasHand2 > 0.5) {
+        float2 handDir = ctr2 - ctr1;
+        float handLen = length(handDir);
+        float2 handDirN = handDir / max(handLen, 0.001);
+        float2 perpN = float2(-handDirN.y, handDirN.x);
+
+        // 当前点到两手连线的投影
+        float2 toPos = pos - ctr1;
+        float along = dot(toPos, handDirN);
+        float perp = abs(dot(toPos, perpN));
+
+        // 闪电抖动（之字形）
+        float jit1 = (noise2D(float2(along * 20.0, floor(time * 12.0) * 1.3)) - 0.5) * handLen * 0.15;
+        float jit2 = (noise2D(float2(along * 30.0, floor(time * 15.0) * 2.1 + 5.0)) - 0.5) * handLen * 0.1;
+        float jitter = jit1 + jit2;
+        perp = abs(perp - jitter);
+
+        // 闪电粗细
+        float boltThickness = 0.003 + 0.002 * sin(time * 20.0);
+        float arc = smoothstep(boltThickness, 0.0, perp) * smoothstep(0.0, 0.02, along) * smoothstep(handLen, handLen - 0.02, along);
+
+        // 闪电闪烁
+        float arcFlicker = step(0.15, hash21(float2(floor(time * 18.0), 0.0)));
+        arc *= arcFlicker * 0.7 + 0.3;
+
+        // 白色核心 + 青色外发光
+        color.rgb += whiteHot * arc * 3.0 * I;
+        color.rgb += energyCyan * smoothstep(boltThickness * 3.0, 0.0, perp) * 0.5 * I
+                   * smoothstep(0.0, 0.02, along) * smoothstep(handLen, handLen - 0.02, along);
+
+        // 沿连线分布的能量火花
+        float sparkAlong = hash21(float2(floor(along * 15.0), floor(time * 8.0)));
+        float sparkArc = step(0.92, sparkAlong) * smoothstep(0.0, 0.05, along) * smoothstep(handLen, handLen - 0.05, along);
+        color.rgb += whiteHot * sparkArc * 0.4 * I;
     }
 
     return color;
@@ -451,11 +492,29 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
 
     // 等比像素空间（用于距离计算），UV 已翻转所以 y 方向与视图坐标一致（0=顶部）
     float2 pos = float2(uv.x * aspect, uv.y);
-    // 追踪点：视图坐标 (0=顶部, y向下) 直接对应 UV 空间，无需翻转
-    float2 ctr = float2(params.center.x * aspect, params.center.y);
+
+    // === 双手智能锚点 ===
+    // 单手：特效中心在食指尖
+    // 双手：特效中心在两手之间中点，半径随两手距离缩放
+    float2 ctr1 = float2(params.center1.x * aspect, params.center1.y);
+    float2 ctr2 = float2(params.center2.x * aspect, params.center2.y);
+    float2 ctr;
+    float radius;
+
+    if (params.hasHand2 > 0.5) {
+        // 双手：中点为中心，距离决定半径
+        ctr = (ctr1 + ctr2) * 0.5;
+        float handDist = distance(ctr1, ctr2);
+        // 半径 = 两手距离的一半 + 基础值
+        radius = handDist * 0.5 + params.radius * 0.3;
+        radius = clamp(radius, 0.08, 0.6);
+    } else {
+        // 单手：食指尖为中心
+        ctr = ctr1;
+        radius = params.radius;
+    }
 
     float dist = distance(pos, ctr);
-    float radius = params.radius;
     float I = params.intensity;
 
     if (I < 0.01) {
@@ -464,7 +523,7 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
 
     switch (params.effectType) {
         case 0:
-            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
+            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2);
         case 1:
             return effectShield(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         case 2:
@@ -474,7 +533,7 @@ fragment float4 portal_fragment(VertexOut in [[stage_in]],
         case 4:
             return effectBlackHole(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
         default:
-            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s);
+            return effectPortal(uv, cameraUV, pos, ctr, dist, radius, params.time, I, aspect, params.isFrontCamera, cameraTex, s, ctr1, ctr2, params.hasHand2);
     }
 }
 

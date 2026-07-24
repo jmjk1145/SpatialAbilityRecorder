@@ -16,6 +16,7 @@
 		4B0002000000000000000007 /* EffectRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A0001000000000000000007 /* EffectRenderer.swift */; };
 		4B0002000000000000000008 /* CameraPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A0001000000000000000008 /* CameraPreviewView.swift */; };
 		4B0002000000000000000009 /* PortalShader.metal in Sources */ = {isa = PBXBuildFile; fileRef = 4A0001000000000000000009 /* PortalShader.metal */; };
+		4B000200000000000000000D /* HandTrackingManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A000100000000000000000D /* HandTrackingManager.swift */; };
 		4B000200000000000000000A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A000100000000000000000B /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
@@ -29,6 +30,7 @@
 		4A0001000000000000000007 /* EffectRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EffectRenderer.swift; sourceTree = "<group>"; };
 		4A0001000000000000000008 /* CameraPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraPreviewView.swift; sourceTree = "<group>"; };
 		4A0001000000000000000009 /* PortalShader.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = PortalShader.metal; sourceTree = "<group>"; };
+		4A000100000000000000000D /* HandTrackingManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HandTrackingManager.swift; sourceTree = "<group>"; };
 		4A000100000000000000000A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		4A000100000000000000000B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4A000100000000000000000C /* SpatialAbilityRecorder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpatialAbilityRecorder.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -51,6 +53,7 @@
 				4A0001000000000000000003 /* ContentView.swift */,
 				4A0001000000000000000004 /* CameraManager.swift */,
 				4A0001000000000000000005 /* TrackingManager.swift */,
+				4A000100000000000000000D /* HandTrackingManager.swift */,
 				4A0001000000000000000006 /* RecordingManager.swift */,
 				4A0001000000000000000007 /* EffectRenderer.swift */,
 				4A0001000000000000000008 /* CameraPreviewView.swift */,
@@ -155,6 +158,7 @@
 				4B0002000000000000000003 /* ContentView.swift in Sources */,
 				4B0002000000000000000004 /* CameraManager.swift in Sources */,
 				4B0002000000000000000005 /* TrackingManager.swift in Sources */,
+				4B000200000000000000000D /* HandTrackingManager.swift in Sources */,
 				4B0002000000000000000006 /* RecordingManager.swift in Sources */,
 				4B0002000000000000000007 /* EffectRenderer.swift in Sources */,
 				4B0002000000000000000008 /* CameraPreviewView.swift in Sources */,

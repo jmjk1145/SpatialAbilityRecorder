@@ -13,7 +13,7 @@ struct ContentView: View {
                 CameraPreviewView(appModel: appModel)
                     .ignoresSafeArea()
 
-                // 点击追踪手势（minimumDistance:0 模拟 tap 并获取坐标）
+                // 点击可手动覆盖特效位置（自动模式下仍可点击）
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(
@@ -28,11 +28,12 @@ struct ContentView: View {
                     )
                     .ignoresSafeArea()
 
-                // 追踪标记
+                // 追踪标记（显示主手位置）
                 if appModel.hasTrackedPoint {
                     TrackingMarker(
                         point: appModel.trackedPoint,
                         isActive: appModel.isTrackingActive,
+                        handCount: appModel.handCount,
                         size: geo.size
                     )
                     .allowsHitTesting(false)
@@ -47,10 +48,22 @@ struct ContentView: View {
                             Text(appModel.statusMessage)
                                 .font(.system(size: 13, weight: .medium))
                                 .foregroundColor(.white)
+
                             if appModel.isTrackingActive {
-                                Text("置信度 \(Int(appModel.trackedConfidence * 100))%")
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.cyan)
+                                HStack(spacing: 6) {
+                                    // 手部数量指示
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "hand.raised.fill")
+                                            .font(.system(size: 10))
+                                        Text("\(appModel.handCount)")
+                                            .font(.system(size: 11, weight: .bold))
+                                    }
+                                    .foregroundColor(appModel.handCount >= 2 ? .cyan : .green)
+
+                                    Text("\(Int(appModel.trackedConfidence * 100))%")
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.white.opacity(0.7))
+                                }
                             }
                         }
                         .padding(.horizontal, 16)
@@ -194,19 +207,30 @@ struct ContentView: View {
 struct TrackingMarker: View {
     let point: CGPoint
     let isActive: Bool
+    let handCount: Int
     let size: CGSize
 
     var body: some View {
         let x = point.x * size.width
         let y = point.y * size.height
 
+        let markerColor: Color = handCount >= 2 ? .cyan : (isActive ? .green : .orange)
+
         ZStack {
             Circle()
-                .stroke(isActive ? Color.cyan : Color.orange, lineWidth: 2)
+                .stroke(markerColor, lineWidth: 2)
                 .frame(width: 50, height: 50)
+
             Circle()
-                .fill(isActive ? Color.cyan : Color.orange)
+                .fill(markerColor)
                 .frame(width: 6, height: 6)
+
+            // 手部图标
+            Image(systemName: "hand.point.up.fill")
+                .font(.system(size: 14))
+                .foregroundColor(markerColor)
+                .offset(y: -35)
+
             // 十字准星
             Path { path in
                 path.move(to: CGPoint(x: 0, y: 25))
@@ -214,7 +238,7 @@ struct TrackingMarker: View {
                 path.move(to: CGPoint(x: 30, y: 0))
                 path.addLine(to: CGPoint(x: 30, y: 60))
             }
-            .stroke(isActive ? Color.cyan.opacity(0.6) : Color.orange.opacity(0.6), lineWidth: 1)
+            .stroke(markerColor.opacity(0.6), lineWidth: 1)
             .frame(width: 60, height: 60)
         }
         .position(x: x, y: y)

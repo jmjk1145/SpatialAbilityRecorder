@@ -5,8 +5,11 @@ import AVFoundation
 
 /// 与 Metal 着色器中 PortalParams 结构体完全对应的 Swift 端定义（逐字段对应，保证内存布局一致）。
 struct PortalParams {
-    var centerX: Float
-    var centerY: Float
+    var center1X: Float       // 第一只手 x
+    var center1Y: Float       // 第一只手 y
+    var center2X: Float       // 第二只手 x
+    var center2Y: Float       // 第二只手 y
+    var hasHand2: Float       // 是否有第二只手 (0 或 1)
     var time: Float
     var aspect: Float
     var radius: Float
@@ -47,7 +50,9 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
 
     // 最新相机帧数据（由 AppModel 在相机回调中更新）
     var latestCameraBuffer: CVPixelBuffer?
-    var trackedPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    var hand1Point: CGPoint = CGPoint(x: 0.5, y: 0.5)   // 第一只手位置
+    var hand2Point: CGPoint = CGPoint(x: 0.5, y: 0.5)   // 第二只手位置
+    var hasHand2: Bool = false                           // 是否检测到第二只手
     var confidence: Float = 0
     var latestFrameTime: CMTime = .invalid
     var effectType: Int32 = 0   // 0空间裂缝 1护盾 2烈焰 3闪电 4黑洞
@@ -170,8 +175,11 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(cameraTexture, index: 0)
 
             var params = PortalParams(
-                centerX: Float(trackedPoint.x),
-                centerY: Float(trackedPoint.y),
+                center1X: Float(hand1Point.x),
+                center1Y: Float(hand1Point.y),
+                center2X: Float(hand2Point.x),
+                center2Y: Float(hand2Point.y),
+                hasHand2: hasHand2 ? 1.0 : 0.0,
                 time: animTime,
                 aspect: Float(renderWidth) / Float(renderHeight),  // 720/1280 ≈ 0.5625
                 radius: 0.18,

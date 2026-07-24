@@ -1,11 +1,14 @@
 import SwiftUI
 import AVFoundation
 
-/// 全局应用状态：协调相机、追踪、特效渲染与录制之间的数据流。
+/// 全局应用状态：协调相机、手部追踪、特效渲染与录制之间的数据流。
+///
+/// 默认使用自动手部识别模式（VNDetectHumanHandPoseRequest），
+/// 实时检测双手并智能定位特效。支持手动点击覆盖。
 final class AppModel: ObservableObject {
 
     let cameraManager = CameraManager()
-    let trackingManager = TrackingManager()
+    let handTrackingManager = HandTrackingManager()
     let recordingManager = RecordingManager()
     let renderer = EffectRenderer()
 
@@ -13,8 +16,9 @@ final class AppModel: ObservableObject {
     @Published var isTrackingActive = false
     @Published var trackedPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
     @Published var trackedConfidence: Float = 0
-    @Published var statusMessage = "点击屏幕选择空间锚点"
+    @Published var statusMessage = "举起手部即可自动识别"
     @Published var hasTrackedPoint = false
+    @Published var handCount: Int = 0  // 当前检测到的手数
 
     // 特效管理
     @Published var currentEffectIndex: Int = 0
@@ -28,32 +32,47 @@ final class AppModel: ObservableObject {
         bindPipeline()
     }
 
-    /// 组装数据流：相机帧 → 追踪 → 渲染器属性 → MTKView 驱动绘制 → 录制
+    /// 组装数据流：相机帧 → 手部追踪 → 渲染器属性 → MTKView 驱动绘制 → 录制
     private func bindPipeline() {
-        // 相机交付新帧 → 更新追踪 + 将最新帧推入渲染器
+        // 相机交付新帧 → 更新手部追踪 + 将最新帧推入渲染器
         cameraManager.onFrame = { [weak self] sampleBuffer, pixelBuffer in
             guard let self = self else { return }
             let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
 
-            // 1. 更新追踪（同步执行，更新 lastTrackedPointNormalized）
-            self.trackingManager.update(with: pixelBuffer, time: time)
+            // 1. 更新手部追踪（自动识别双手）
+            self.handTrackingManager.update(with: pixelBuffer, time: time)
 
-            // 2. 将最新帧数据推入渲染器（MTKView 的 draw 循环会读取）
+            // 2. 将追踪结果推入渲染器
             self.renderer.latestCameraBuffer = pixelBuffer
             self.renderer.latestFrameTime = time
-            self.renderer.trackedPoint = self.trackingManager.lastTrackedPointNormalized
-            self.renderer.confidence = self.trackingManager.lastConfidence
+            self.renderer.hand1Point = self.handTrackingManager.primaryHandPosition
+            self.renderer.hasHand2 = self.handTrackingManager.hasBothHands
+            self.renderer.confidence = self.handTrackingManager.overallConfidence
+            self.renderer.setTrackingActive(self.handTrackingManager.hasHand)
 
             // 3. 追踪结果回主线程更新 UI
-            let point = self.trackingManager.lastTrackedPointNormalized
-            let conf = self.trackingManager.lastConfidence
+            let handCount = self.handTrackingManager.hands.count
+            let conf = self.handTrackingManager.overallConfidence
+            let primaryPos = self.handTrackingManager.primaryHandPosition
+            let hasBoth = self.handTrackingManager.hasBothHands
+
             DispatchQueue.main.async {
-                self.trackedPoint = point
+                self.handCount = handCount
                 self.trackedConfidence = conf
-                if conf < 0.15 && self.isTrackingActive {
+                self.trackedPoint = primaryPos
+
+                if handCount > 0 {
+                    self.hasTrackedPoint = true
+                    self.isTrackingActive = true
+                    if hasBoth {
+                        self.statusMessage = "双手识别中 · 闪电连接已激活"
+                    } else {
+                        self.statusMessage = "单手识别中 · \(Int(conf * 100))% 置信度"
+                    }
+                } else {
+                    self.hasTrackedPoint = false
                     self.isTrackingActive = false
-                    self.renderer.setTrackingActive(false)
-                    self.statusMessage = "追踪丢失，请重新点击锚点"
+                    self.statusMessage = "举起手部即可自动识别"
                 }
             }
         }
@@ -62,9 +81,7 @@ final class AppModel: ObservableObject {
         cameraManager.onCameraSwitched = { [weak self] isFront in
             DispatchQueue.main.async {
                 self?.isUsingFrontCamera = isFront
-                // 同步通知渲染器和追踪器当前摄像头方向
                 self?.renderer.isFrontCamera = isFront
-                self?.trackingManager.isFrontCamera = isFront
                 self?.statusMessage = isFront ? "已切换至前置摄像头" : "已切换至后置摄像头"
             }
         }
@@ -78,34 +95,33 @@ final class AppModel: ObservableObject {
 
     // MARK: - 用户交互
 
-    /// 用户在预览上点击，设置追踪锚点（手动追踪的起点）
+    /// 手动点击覆盖（可选）：设置手动追踪锚点
     func setTrackingAnchor(normalizedPoint: CGPoint) {
-        trackingManager.startTracking(at: normalizedPoint)
-        renderer.setTrackingActive(true)
+        // 在自动模式下，手动点击可以临时覆盖特效位置
         DispatchQueue.main.async {
             self.hasTrackedPoint = true
             self.isTrackingActive = true
             self.trackedPoint = normalizedPoint
             self.trackedConfidence = 1.0
-            self.statusMessage = "空间锚点已锁定"
+            self.statusMessage = "手动锚点已设置 · 举起新手部恢复自动"
         }
     }
 
     /// 重置追踪
     func resetTracking() {
-        trackingManager.stopTracking()
+        handTrackingManager.reset()
         renderer.setTrackingActive(false)
         DispatchQueue.main.async {
             self.hasTrackedPoint = false
             self.isTrackingActive = false
             self.trackedConfidence = 0
-            self.statusMessage = "点击屏幕选择空间锚点"
+            self.handCount = 0
+            self.statusMessage = "举起手部即可自动识别"
         }
     }
 
     /// 切换前后摄像头
     func switchCamera() {
-        // 切换摄像头时重置追踪（坐标空间变化）
         resetTracking()
         cameraManager.switchCamera()
     }
