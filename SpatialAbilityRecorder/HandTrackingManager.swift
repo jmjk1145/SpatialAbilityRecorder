@@ -170,10 +170,11 @@ final class HandTrackingManager {
             let gesture = detectGesture(obs)
             let rotation = computeHandRotation(obs)
 
-            // 置信度增强：检测到的关节数越多，置信度越高
-            // Vision 返回的 obs.confidence 通常较低，我们基于关节数量增强
-            let jointBonus = Float(jointCount) / 21.0  // 21 个关节全检测到 = 1.0
-            let enhancedConfidence = min(max(obs.confidence * 2.0, avgJointConf) * (0.5 + jointBonus * 0.5), 1.0)
+            // 置信度增强：检测到的关节数越多，置信度越高（拆分避免编译器超时）
+            let jointBonus = Float(jointCount) / 21.0
+            let baseConf = max(obs.confidence * 2.0, avgJointConf)
+            let confMultiplier = 0.5 + jointBonus * 0.5
+            let enhancedConfidence = min(baseConf * confMultiplier, 1.0)
 
             results.append(HandResult(
                 position: rawPos,
@@ -428,12 +429,13 @@ final class HandTrackingManager {
                 // 计算本次移动距离
                 let moveDist = bestDist
 
-                // 自适应平滑系数：
-                // - 移动距离 > 0.05（快速移动）：alpha = 0.7（少平滑，快速响应）
-                // - 移动距离 < 0.01（几乎静止）：alpha = 0.15（多平滑，消除抖动）
-                // - 中间值线性插值
-                let speedFactor = CGFloat(min(max(Float(moveDist) / 0.05, 0.0), 1.0))
-                let alpha = baseSmoothingFactor * (1.0 - speedFactor * 0.7) + speedFactor * 0.5
+                // 自适应平滑系数（拆分为独立步骤避免编译器超时）
+                let moveDistF = Float(moveDist)
+                let rawSpeed = min(max(moveDistF / 0.05, 0.0), 1.0)
+                let speedFactor = CGFloat(rawSpeed)
+                let alphaPart1 = baseSmoothingFactor * (1.0 - speedFactor * 0.7)
+                let alphaPart2 = speedFactor * 0.5
+                let alpha = alphaPart1 + alphaPart2
                 let clampedAlpha = min(max(alpha, 0.12), 0.75)
 
                 // 速度预测：基于上一帧速度预测当前位置
@@ -463,8 +465,11 @@ final class HandTrackingManager {
                 let angleAlpha = min(clampedAlpha * 1.5, 0.8)
                 let smoothedAngle = prevAngle + diff * Float(angleAlpha)
 
-                // 置信度平滑
-                let smoothedConf = prev.confidence * (1 - clampedAlpha * 0.5) + hand.confidence * (clampedAlpha * 0.5)
+                // 置信度平滑（拆分为独立变量避免编译器超时）
+                let confAlpha = Float(clampedAlpha) * 0.5
+                let prevConf = prev.confidence
+                let currConf = hand.confidence
+                let smoothedConf = prevConf * (1.0 - confAlpha) + currConf * confAlpha
 
                 var smoothedHand = hand
                 smoothedHand.position = smoothed
