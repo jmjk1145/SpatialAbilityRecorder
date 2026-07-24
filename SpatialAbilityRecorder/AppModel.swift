@@ -15,10 +15,13 @@ final class AppModel: ObservableObject {
     @Published var isRecording = false
     @Published var isTrackingActive = false
     @Published var trackedPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)
+    @Published var secondaryHandPoint: CGPoint = CGPoint(x: 0.5, y: 0.5)  // 第二只手位置
     @Published var trackedConfidence: Float = 0
     @Published var statusMessage = "举起手部即可自动识别"
     @Published var hasTrackedPoint = false
     @Published var handCount: Int = 0  // 当前检测到的手数
+    @Published var currentGestureName: String = ""  // 当前手势名称
+    @Published var currentGestureIcon: String = ""  // 当前手势图标
 
     // 特效管理
     @Published var currentEffectIndex: Int = 0
@@ -42,30 +45,48 @@ final class AppModel: ObservableObject {
             // 1. 更新手部追踪（自动识别双手）
             self.handTrackingManager.update(with: pixelBuffer, time: time)
 
-            // 2. 将追踪结果推入渲染器
+            // 2. 将追踪结果推入渲染器（手势调节强度）
+            let baseConfidence = self.handTrackingManager.overallConfidence
+            let gesture = self.handTrackingManager.primaryGesture
+            let intensityMultiplier = self.gestureIntensityMultiplier(gesture)
+            let adjustedConfidence = min(baseConfidence * intensityMultiplier, 1.0)
+
             self.renderer.latestCameraBuffer = pixelBuffer
             self.renderer.latestFrameTime = time
             self.renderer.hand1Point = self.handTrackingManager.primaryHandPosition
+            self.renderer.hand2Point = self.handTrackingManager.hands.count >= 2
+                ? self.handTrackingManager.hands[1].position
+                : self.handTrackingManager.primaryHandPosition
             self.renderer.hasHand2 = self.handTrackingManager.hasBothHands
-            self.renderer.confidence = self.handTrackingManager.overallConfidence
+            self.renderer.confidence = adjustedConfidence
+            self.renderer.effectRadius = self.handTrackingManager.dynamicRadius
             self.renderer.setTrackingActive(self.handTrackingManager.hasHand)
 
             // 3. 追踪结果回主线程更新 UI
             let handCount = self.handTrackingManager.hands.count
             let conf = self.handTrackingManager.overallConfidence
             let primaryPos = self.handTrackingManager.primaryHandPosition
+            let secondaryPos = self.handTrackingManager.hands.count >= 2
+                ? self.handTrackingManager.hands[1].position
+                : primaryPos
             let hasBoth = self.handTrackingManager.hasBothHands
+            let (gestureName, gestureIcon) = self.gestureDisplayInfo(gesture)
 
             DispatchQueue.main.async {
                 self.handCount = handCount
                 self.trackedConfidence = conf
                 self.trackedPoint = primaryPos
+                self.secondaryHandPoint = secondaryPos
+                self.currentGestureName = gestureName
+                self.currentGestureIcon = gestureIcon
 
                 if handCount > 0 {
                     self.hasTrackedPoint = true
                     self.isTrackingActive = true
                     if hasBoth {
                         self.statusMessage = "双手识别中 · 闪电连接已激活"
+                    } else if !gestureName.isEmpty {
+                        self.statusMessage = "\(gestureName) · \(Int(conf * 100))% 置信度"
                     } else {
                         self.statusMessage = "单手识别中 · \(Int(conf * 100))% 置信度"
                     }
@@ -107,6 +128,30 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // MARK: - 手势智能
+
+    /// 根据手势调节特效强度倍数
+    private func gestureIntensityMultiplier(_ gesture: HandTrackingManager.HandGesture) -> Float {
+        switch gesture {
+        case .pinch:    return 1.5  // 捏合 → 能量集中，强度增强
+        case .pointing: return 1.3  // 指向 → 聚焦光束
+        case .open:     return 1.0  // 张开 → 正常强度
+        case .fist:     return 0.6  // 握拳 → 能量压缩，降低显示
+        case .unknown:  return 1.0
+        }
+    }
+
+    /// 手势对应的显示名称和 SF Symbol 图标
+    private func gestureDisplayInfo(_ gesture: HandTrackingManager.HandGesture) -> (String, String) {
+        switch gesture {
+        case .open:     return ("张开手掌", "hand.raised.fill")
+        case .fist:     return ("握拳", "hand.raised.fill")
+        case .pinch:    return ("捏合手势", "hand.point.up.left.fill")
+        case .pointing: return ("指向手势", "hand.point.up.fill")
+        case .unknown:  return ("", "")
+        }
+    }
+
     /// 重置追踪
     func resetTracking() {
         handTrackingManager.reset()
@@ -116,6 +161,8 @@ final class AppModel: ObservableObject {
             self.isTrackingActive = false
             self.trackedConfidence = 0
             self.handCount = 0
+            self.currentGestureName = ""
+            self.currentGestureIcon = ""
             self.statusMessage = "举起手部即可自动识别"
         }
     }

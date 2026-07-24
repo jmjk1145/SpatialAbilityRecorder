@@ -57,6 +57,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
     var latestFrameTime: CMTime = .invalid
     var effectType: Int32 = 0   // 0空间裂缝 1护盾 2烈焰 3闪电 4黑洞
     var isFrontCamera: Bool = false  // 当前是否使用前置摄像头
+    var effectRadius: Float = 0.18  // 动态特效半径（由 HandTrackingManager 计算）
 
     /// 渲染完成回调，返回可用于录制的 CVPixelBuffer 及其时间戳
     var recordingCallback: ((CVPixelBuffer, CMTime) -> Void)?
@@ -182,7 +183,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
                 hasHand2: hasHand2 ? 1.0 : 0.0,
                 time: animTime,
                 aspect: Float(renderWidth) / Float(renderHeight),  // 720/1280 ≈ 0.5625
-                radius: 0.18,
+                radius: effectRadius,
                 intensity: confidence > 0.15 ? confidence : 0.0,
                 effectType: effectType,
                 isFrontCamera: isFrontCamera ? 1 : 0

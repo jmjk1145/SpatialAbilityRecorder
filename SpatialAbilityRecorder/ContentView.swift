@@ -34,6 +34,19 @@ struct ContentView: View {
                         point: appModel.trackedPoint,
                         isActive: appModel.isTrackingActive,
                         handCount: appModel.handCount,
+                        isPrimary: true,
+                        size: geo.size
+                    )
+                    .allowsHitTesting(false)
+                }
+
+                // 第二只手标记
+                if appModel.handCount >= 2 {
+                    TrackingMarker(
+                        point: appModel.secondaryHandPoint,
+                        isActive: appModel.isTrackingActive,
+                        handCount: appModel.handCount,
+                        isPrimary: false,
                         size: geo.size
                     )
                     .allowsHitTesting(false)
@@ -59,6 +72,13 @@ struct ContentView: View {
                                             .font(.system(size: 11, weight: .bold))
                                     }
                                     .foregroundColor(appModel.handCount >= 2 ? .cyan : .green)
+
+                                    // 手势指示
+                                    if !appModel.currentGestureIcon.isEmpty {
+                                        Image(systemName: appModel.currentGestureIcon)
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.cyan)
+                                    }
 
                                     Text("\(Int(appModel.trackedConfidence * 100))%")
                                         .font(.system(size: 11))
@@ -208,38 +228,41 @@ struct TrackingMarker: View {
     let point: CGPoint
     let isActive: Bool
     let handCount: Int
+    let isPrimary: Bool
     let size: CGSize
 
     var body: some View {
         let x = point.x * size.width
         let y = point.y * size.height
 
-        let markerColor: Color = handCount >= 2 ? .cyan : (isActive ? .green : .orange)
+        let markerColor: Color = handCount >= 2 ? (isPrimary ? .cyan : .green) : (isActive ? .green : .orange)
+        let markerSize: CGFloat = isPrimary ? 50 : 40
 
         ZStack {
             Circle()
                 .stroke(markerColor, lineWidth: 2)
-                .frame(width: 50, height: 50)
+                .frame(width: markerSize, height: markerSize)
 
             Circle()
                 .fill(markerColor)
                 .frame(width: 6, height: 6)
 
             // 手部图标
-            Image(systemName: "hand.point.up.fill")
-                .font(.system(size: 14))
+            Image(systemName: isPrimary ? "hand.point.up.fill" : "hand.point.left.fill")
+                .font(.system(size: 12))
                 .foregroundColor(markerColor)
-                .offset(y: -35)
+                .offset(y: -(markerSize / 2 + 12))
 
             // 十字准星
             Path { path in
-                path.move(to: CGPoint(x: 0, y: 25))
-                path.addLine(to: CGPoint(x: 60, y: 25))
-                path.move(to: CGPoint(x: 30, y: 0))
-                path.addLine(to: CGPoint(x: 30, y: 60))
+                let half = markerSize / 2 + 5
+                path.move(to: CGPoint(x: 0, y: half))
+                path.addLine(to: CGPoint(x: markerSize + 10, y: half))
+                path.move(to: CGPoint(x: half, y: 0))
+                path.addLine(to: CGPoint(x: half, y: markerSize + 10))
             }
-            .stroke(markerColor.opacity(0.6), lineWidth: 1)
-            .frame(width: 60, height: 60)
+            .stroke(markerColor.opacity(0.5), lineWidth: 1)
+            .frame(width: markerSize + 10, height: markerSize + 10)
         }
         .position(x: x, y: y)
         .animation(.easeOut(duration: 0.08), value: point)
