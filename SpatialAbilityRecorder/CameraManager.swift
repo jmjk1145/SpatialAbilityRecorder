@@ -2,6 +2,9 @@ import AVFoundation
 import UIKit
 
 /// 相机管理：配置 AVCaptureSession，逐帧交付视频像素缓冲，支持前后摄像头切换。
+///
+/// 重要：不使用 AVCaptureConnection.videoOrientation（对 AVCaptureVideoDataOutput 不可靠），
+/// 原始 buffer 始终为横屏 1280x720（传感器原生方向），旋转在 Metal shader 中处理。
 final class CameraManager: NSObject {
 
     /// 每收到一帧时回调（sampleBuffer + 解出的 CVPixelBuffer）
@@ -20,8 +23,8 @@ final class CameraManager: NSObject {
 
     var captureSession: AVCaptureSession { session }
 
-    // 输出尺寸（由实际 videoFormat 决定，默认 720p）
-    private(set) var outputSize: CGSize = CGSize(width: 720, height: 1280)
+    /// 原始输出尺寸（横屏 1280x720，portrait 旋转在 shader 中处理）
+    private(set) var outputSize: CGSize = CGSize(width: 1280, height: 720)
 
     /// 当前是否使用前置摄像头
     var isUsingFrontCamera: Bool { currentPosition == .front }
@@ -72,7 +75,6 @@ final class CameraManager: NSObject {
                     self.session.addInput(input)
                     self.currentPosition = newPosition
                 } else {
-                    // 添加失败，尝试恢复原有输入
                     self.session.commitConfiguration()
                     return
                 }
@@ -81,15 +83,11 @@ final class CameraManager: NSObject {
                 return
             }
 
-            // 更新视频连接的方向和镜像
+            // 不在 AVFoundation 层镜像，由 Metal shader 处理前置摄像头镜像
             if let conn = self.videoOutput.connection(with: .video) {
-                if conn.isVideoOrientationSupported {
-                    conn.videoOrientation = .portrait
-                }
                 if conn.isVideoMirroringSupported {
                     conn.automaticallyAdjustsVideoMirroring = false
-                    // 前置摄像头镜像（符合自拍预期），后置不镜像
-                    conn.isVideoMirrored = (newPosition == .front)
+                    conn.isVideoMirrored = false
                 }
             }
 
@@ -108,7 +106,7 @@ final class CameraManager: NSObject {
     private func configureSession() {
         session.beginConfiguration()
 
-        // 预设：720p，兼顾画质与性能
+        // 预设：720p（横屏 1280x720）
         session.sessionPreset = .hd1280x720
 
         // 视频输入（后置摄像头）
@@ -140,21 +138,18 @@ final class CameraManager: NSObject {
             session.addOutput(videoOutput)
         }
 
+        // 仅设置镜像，不设 videoOrientation（由 shader 处理旋转）
         if let conn = videoOutput.connection(with: .video) {
-            if conn.isVideoOrientationSupported {
-                conn.videoOrientation = .portrait
-            }
             if conn.isVideoMirroringSupported {
                 conn.automaticallyAdjustsVideoMirroring = false
-                // 后置摄像头不镜像
                 conn.isVideoMirrored = false
             }
         }
 
         session.commitConfiguration()
 
-        // 记录实际输出尺寸（基于 sessionPreset .hd1280x720，portrait 模式宽高互换）
-        outputSize = CGSize(width: 720, height: 1280)
+        // 原始横屏尺寸
+        outputSize = CGSize(width: 1280, height: 720)
 
         isConfigured = true
     }

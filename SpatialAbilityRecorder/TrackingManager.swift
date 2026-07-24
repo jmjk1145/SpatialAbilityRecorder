@@ -29,6 +29,9 @@ final class TrackingManager {
     /// 锚点框的归一化半边长（点击后生成的初始检测框大小）
     private let anchorHalfSize: CGFloat = 0.12
 
+    /// 当前是否使用前置摄像头（决定 Vision orientation）
+    var isFrontCamera: Bool = false
+
     /// 启动追踪：用户点击点（视图坐标系，左上角原点）
     func startTracking(at viewNormalizedPoint: CGPoint) {
         lock.lock()
@@ -64,7 +67,11 @@ final class TrackingManager {
         // 复用上一帧观测结果
         request.inputObservation = lastObservation ?? request.inputObservation
 
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .up, options: [:])
+        // 相机 buffer 为横屏 1280x720（传感器原生方向），需告知 Vision 正确的方向：
+        // 后置摄像头：.right（顺时针旋转 90° → 竖屏）
+        // 前置摄像头：.rightMirrored（旋转 90° + 水平镜像 → 竖屏，与用户看到的画面一致）
+        let orientation: CGImagePropertyOrientation = isFrontCamera ? .rightMirrored : .right
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
 
         do {
             try handler.perform([request])

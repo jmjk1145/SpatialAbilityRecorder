@@ -62,6 +62,9 @@ final class AppModel: ObservableObject {
         cameraManager.onCameraSwitched = { [weak self] isFront in
             DispatchQueue.main.async {
                 self?.isUsingFrontCamera = isFront
+                // 同步通知渲染器和追踪器当前摄像头方向
+                self?.renderer.isFrontCamera = isFront
+                self?.trackingManager.isFrontCamera = isFront
                 self?.statusMessage = isFront ? "已切换至前置摄像头" : "已切换至后置摄像头"
             }
         }

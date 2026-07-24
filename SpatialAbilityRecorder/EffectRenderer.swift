@@ -11,10 +11,10 @@ struct PortalParams {
     var aspect: Float
     var radius: Float
     var intensity: Float
-    var effectType: Int32   // 0传送门 1护盾 2烈焰 3闪电 4黑洞
+    var effectType: Int32     // 0传送门 1护盾 2烈焰 3闪电 4黑洞
+    var isFrontCamera: Int32  // 0后置 1前置
     var _pad0: Float = 0
     var _pad1: Float = 0
-    var _pad2: Float = 0
 }
 
 /// 包装 CVMetalTexture + MTLTexture，确保 CVMetalTexture 在命令缓冲执行期间不被释放。
@@ -51,6 +51,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
     var confidence: Float = 0
     var latestFrameTime: CMTime = .invalid
     var effectType: Int32 = 0   // 0传送门 1护盾 2烈焰 3闪电 4黑洞
+    var isFrontCamera: Bool = false  // 当前是否使用前置摄像头
 
     /// 渲染完成回调，返回可用于录制的 CVPixelBuffer 及其时间戳
     var recordingCallback: ((CVPixelBuffer, CMTime) -> Void)?
@@ -114,23 +115,31 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
               portalPipeline != nil,
               blitPipeline != nil else { return }
 
-        let width = CVPixelBufferGetWidth(cameraBuffer)
-        let height = CVPixelBufferGetHeight(cameraBuffer)
-        outputSize = CGSize(width: CGFloat(width), height: CGFloat(height))
+        // 相机 buffer 始终为横屏 1280x720（传感器原生方向）
+        let camWidth = CVPixelBufferGetWidth(cameraBuffer)   // 1280
+        let camHeight = CVPixelBufferGetHeight(cameraBuffer)  // 720
 
-        // 首帧时设置 drawable 尺寸（仅一次，避免每帧重设导致性能问题）
+        // 渲染目标为竖屏 720x1280（交换宽高）
+        let renderWidth = camHeight   // 720
+        let renderHeight = camWidth   // 1280
+        outputSize = CGSize(width: CGFloat(renderWidth), height: CGFloat(renderHeight))
+
+        // 首帧时设置 drawable 尺寸为竖屏（仅一次，避免每帧重设导致性能问题）
         if !drawableSizeInitialized {
-            view.drawableSize = CGSize(width: width, height: height)
+            view.drawableSize = CGSize(width: renderWidth, height: renderHeight)
             drawableSizeInitialized = true
         }
 
-        ensurePool(width: width, height: height)
+        // 离屏渲染缓冲池使用竖屏尺寸
+        ensurePool(width: renderWidth, height: renderHeight)
 
         guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let drawable = view.currentDrawable,
-              let cameraTexRef = makeTextureRef(from: cameraBuffer, width: width, height: height),
+              // 相机纹理使用原始横屏尺寸
+              let cameraTexRef = makeTextureRef(from: cameraBuffer, width: camWidth, height: camHeight),
+              // 离屏和录制缓冲使用竖屏尺寸
               let offscreenBuffer = dequeueOffscreenBuffer(),
-              let offscreenTexRef = makeTextureRef(from: offscreenBuffer, width: width, height: height) else {
+              let offscreenTexRef = makeTextureRef(from: offscreenBuffer, width: renderWidth, height: renderHeight) else {
             return
         }
 
@@ -139,18 +148,18 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
         let time = latestFrameTime
         let animTime = Float(CACurrentMediaTime())
 
-        // 是否需要录制：预分配录制缓冲并创建 Y 翻转纹理
+        // 是否需要录制：预分配录制缓冲并创建纹理
         let needsRecording = recordingCallback != nil
         var recordingBuffer: CVPixelBuffer? = nil
         var recordingTexRef: TextureRef? = nil
         if needsRecording {
             recordingBuffer = dequeueOffscreenBuffer()
             if let rb = recordingBuffer {
-                recordingTexRef = makeTextureRef(from: rb, width: width, height: height)
+                recordingTexRef = makeTextureRef(from: rb, width: renderWidth, height: renderHeight)
             }
         }
 
-        // ---- 1. 渲染传送门特效到离屏纹理 ----
+        // ---- 1. 渲染特效到离屏纹理（竖屏 720x1280） ----
         let portalPass = MTLRenderPassDescriptor()
         portalPass.colorAttachments[0].texture = offscreenTexture
         portalPass.colorAttachments[0].loadAction = .dontCare
@@ -164,10 +173,11 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
                 centerX: Float(trackedPoint.x),
                 centerY: Float(trackedPoint.y),
                 time: animTime,
-                aspect: Float(width) / Float(height),
+                aspect: Float(renderWidth) / Float(renderHeight),  // 720/1280 ≈ 0.5625
                 radius: 0.18,
                 intensity: confidence > 0.15 ? confidence : 0.0,
-                effectType: effectType
+                effectType: effectType,
+                isFrontCamera: isFrontCamera ? 1 : 0
             )
             if !hasActiveTracking {
                 // 未追踪时不显示特效（intensity = 0）
@@ -178,7 +188,7 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             encoder.endEncoding()
         }
 
-        // ---- 2. 将离屏纹理拷贝到 drawable（预览，正常方向） ----
+        // ---- 2. 将离屏纹理拷贝到 drawable（预览，UV 已翻转无需 Y 翻转） ----
         let blitPass = MTLRenderPassDescriptor()
         blitPass.colorAttachments[0].texture = drawable.texture
         blitPass.colorAttachments[0].loadAction = .dontCare
@@ -191,17 +201,17 @@ final class EffectRenderer: NSObject, MTKViewDelegate {
             encoder.endEncoding()
         }
 
-        // ---- 3. 将离屏纹理 Y 翻转拷贝到录制缓冲（视频文件期望顶左原点） ----
+        // ---- 3. 将离屏纹理拷贝到录制缓冲（UV 已翻转，直接使用 blitPipeline） ----
         if let recTex = recordingTexRef?.texture,
            let recBuffer = recordingBuffer,
-           blitFlippedPipeline != nil {
+           blitPipeline != nil {
             let recPass = MTLRenderPassDescriptor()
             recPass.colorAttachments[0].texture = recTex
             recPass.colorAttachments[0].loadAction = .dontCare
             recPass.colorAttachments[0].storeAction = .store
 
             if let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: recPass) {
-                encoder.setRenderPipelineState(blitFlippedPipeline)
+                encoder.setRenderPipelineState(blitPipeline)
                 encoder.setFragmentTexture(offscreenTexture, index: 0)
                 encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
                 encoder.endEncoding()
